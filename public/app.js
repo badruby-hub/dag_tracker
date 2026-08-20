@@ -41,6 +41,36 @@ function findTicker(coin, exchangeName) {
   return coin.tickers.find((t) => t.exchange === exchangeName) || null;
 }
 
+// Best-effort deep links to each exchange's futures trading page for a
+// symbol. Exchanges change their URL structure occasionally — if a link
+// ever 404s, this is the one place to fix it.
+const EXCHANGE_URL_BUILDERS = {
+  Bybit: (rawSymbol) => `https://www.bybit.com/trade/usdt/${rawSymbol}`,
+  OKX: (rawSymbol) => `https://www.okx.com/trade-swap/${rawSymbol.toLowerCase()}`,
+  Binance: (rawSymbol) => `https://www.binance.com/en/futures/${rawSymbol}`,
+  Bitget: (rawSymbol) => `https://www.bitget.com/futures/usdt/${rawSymbol}`,
+  'Gate.io': (rawSymbol) => `https://www.gate.io/futures_trade/USDT/${rawSymbol}`,
+  MEXC: (rawSymbol) => `https://www.mexc.com/futures/${rawSymbol}`,
+};
+
+function buildExchangeUrl(exchange, rawSymbol) {
+  const build = EXCHANGE_URL_BUILDERS[exchange];
+  return build ? build(rawSymbol) : null;
+}
+
+// Inside Telegram's Mini App WebView, a plain window.open() can be blocked
+// or swallowed — Telegram.WebApp.openLink() is the supported way to hand a
+// URL off to the system browser. Falls back to window.open() for testing
+// in a regular desktop/mobile browser outside Telegram.
+function openExternal(url) {
+  if (!url) return;
+  if (tg?.openLink) {
+    tg.openLink(url);
+  } else {
+    window.open(url, '_blank', 'noopener');
+  }
+}
+
 function renderCoin(coin) {
   const node = cardTemplate.content.cloneNode(true);
   const card = node.querySelector('.coin-card');
@@ -77,10 +107,20 @@ function plural(n) {
 }
 
 function fillExchangePanel(panel, name, ticker) {
-  panel.querySelector('.exchange__name').textContent = ticker ? `${name} · ${ticker.rawSymbol}` : name;
+  const url = ticker ? buildExchangeUrl(ticker.exchange, ticker.rawSymbol) : null;
+  const label = ticker ? `${name} · ${ticker.rawSymbol}` : name;
+  panel.querySelector('.exchange__name').textContent = url ? `${label} ↗` : label;
   panel.querySelector('.v-bid').textContent = ticker ? fmtPrice(ticker.bid) : '—';
   panel.querySelector('.v-ask').textContent = ticker ? fmtPrice(ticker.ask) : '—';
   panel.querySelector('.v-last').textContent = ticker ? fmtPrice(ticker.last) : '—';
+
+  if (url) {
+    panel.classList.add('exchange--clickable');
+    panel.addEventListener('click', () => {
+      tg?.HapticFeedback?.impactOccurred('light');
+      openExternal(url);
+    });
+  }
 }
 
 function render(coins) {
