@@ -2,7 +2,7 @@ require('dotenv').config();
 
 module.exports = {
   // Порог спреда в %, при котором монета считается "интересной" и попадает в алерты.
-  threshold: parseFloat(process.env.THRESHOLD_PERCENT || '4'),
+  threshold: parseFloat(process.env.THRESHOLD_PERCENT || '2'),
 
   // Отсекаем монеты с суточным объёмом ниже этого значения (в USDT) на любой
   // из двух бирж. Без этого в топе будут в основном мёртвые пары с почти
