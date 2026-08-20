@@ -1,0 +1,16 @@
+{
+  "name": "frogi-spread-tracker",
+  "version": "1.0.0",
+  "description": "Telegram bot + Mini App that tracks a coin's price across exchanges and flags arbitrage spread",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "telegraf": "^4.16.3"
+  }
+}

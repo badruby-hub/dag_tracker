@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Спред-трекер</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="topbar__title">
+        <span class="topbar__eyebrow">6 бирж · споты usdt</span>
+        <h1>Спред-трекер</h1>
+      </div>
+      <button id="refreshBtn" class="icon-btn" aria-label="Обновить">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke-linecap="round"/>
+          <path d="M21 3v6h-6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </header>
+
+    <div class="searchbar">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="7"/>
+        <path d="M21 21l-4.3-4.3" stroke-linecap="round"/>
+      </svg>
+      <input id="searchInput" type="text" placeholder="Введите название монеты" autocomplete="off" />
+    </div>
+
+    <div class="scanbar">
+      <div class="threshold-pill" id="thresholdPill">Порог алерта: —%</div>
+      <div class="scan-info" id="scanInfo"></div>
+    </div>
+
+    <main id="list" class="list">
+      <div class="empty-state" id="emptyState">
+        Нажми обновить, чтобы просканировать рынок
+      </div>
+    </main>
+
+    <p class="footnote">Цены — публичные данные Bybit и OKX. Обновление вручную.</p>
+  </div>
+
+  <template id="coinCardTemplate">
+    <section class="coin-card">
+      <div class="coin-card__header">
+        <div class="coin-card__name"></div>
+        <div class="coin-card__spread-wrap">
+          <span class="spread-badge"></span>
+        </div>
+      </div>
+      <div class="coin-card__route"></div>
+      <div class="exchanges">
+        <div class="exchange exchange--buy">
+          <div class="exchange__head">
+            <span class="dir-badge dir-badge--buy">↓ купить</span>
+            <span class="exchange__name"></span>
+          </div>
+          <dl class="exchange__stats">
+            <div><dt>Bid</dt><dd class="v-bid"></dd></div>
+            <div><dt>Ask</dt><dd class="v-ask"></dd></div>
+            <div><dt>Last</dt><dd class="v-last"></dd></div>
+          </dl>
+        </div>
+        <div class="exchange exchange--sell">
+          <div class="exchange__head">
+            <span class="dir-badge dir-badge--sell">↑ продать</span>
+            <span class="exchange__name"></span>
+          </div>
+          <dl class="exchange__stats">
+            <div><dt>Bid</dt><dd class="v-bid"></dd></div>
+            <div><dt>Ask</dt><dd class="v-ask"></dd></div>
+            <div><dt>Last</dt><dd class="v-last"></dd></div>
+          </dl>
+        </div>
+      </div>
+    </section>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
