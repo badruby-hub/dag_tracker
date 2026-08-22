@@ -77,7 +77,7 @@ const EXCHANGE_URL_BUILDERS = {
   ASTER: (rawSymbol) => `https://www.asterdex.com/en/futures/${rawSymbol}`,
   Ourbit: (rawSymbol) => `https://futures.ourbit.com/exchange/${rawSymbol}`,
   KCEX: (rawSymbol) => `https://www.kcex.com/futures/exchange/${rawSymbol}`,
-  BitMart: (rawSymbol) => `https://www.bitmart.com/futures/en?symbol=${rawSymbol}`,
+  BitMart: (rawSymbol) => `https://www.bitmart.com/ru-RU/futures/${rawSymbol}`,
 };
 
 function buildExchangeUrl(exchange, rawSymbol) {
