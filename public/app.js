@@ -4,24 +4,48 @@ if (tg) {
   tg.expand();
 }
 
+// ---------- DOM refs ----------
 const listEl = document.getElementById('list');
 const emptyStateEl = document.getElementById('emptyState');
 const refreshBtn = document.getElementById('refreshBtn');
 const searchInput = document.getElementById('searchInput');
 const thresholdPill = document.getElementById('thresholdPill');
 const scanInfoEl = document.getElementById('scanInfo');
-const cardTemplate = document.getElementById('coinCardTemplate');
+const coinCardTemplate = document.getElementById('coinCardTemplate');
+const pairCardTemplate = document.getElementById('pairCardTemplate');
+const coinGroupTemplate = document.getElementById('coinGroupTemplate');
+const coinPickerEl = document.getElementById('coinPicker');
+const coinPickerListEl = document.getElementById('coinPickerList');
+const coinPickerCountEl = document.getElementById('coinPickerCount');
+const pageScanEl = document.getElementById('pageScan');
+const pageSettingsEl = document.getElementById('pageSettings');
+const bottomNavEl = document.querySelector('.bottom-nav');
+const volumePickerEl = document.getElementById('volumePicker');
+const volumePickerListEl = document.getElementById('volumePickerList');
+const volumePickerValueEl = document.getElementById('volumePickerValue');
+const autorefreshToggleEl = document.getElementById('autorefreshToggle');
 
+// ---------- State ----------
 let lastData = [];
 let lastThreshold = null;
+let selectedCoinSymbol = null; // set when a coin is picked from the coin-picker list
+const MAX_PAIRS_PER_COIN = 8; // cap how many exchange-pairs we show for one coin
 
+const DEFAULT_MIN_VOLUME = 100000;
+let selectedVolume = Number(localStorage.getItem('minVolume')) || DEFAULT_MIN_VOLUME;
+
+const AUTOREFRESH_MS = 8000;
+let autorefreshEnabled = localStorage.getItem('autorefresh') === 'true';
+let autorefreshTimer = null;
+
+// ---------- Formatting ----------
 function fmtPrice(n) {
   if (n === null || n === undefined || Number.isNaN(n)) return '—';
   if (n === 0) return '0';
   if (n >= 100) return n.toFixed(2);
   if (n >= 1) return n.toFixed(4);
   if (n >= 0.01) return n.toFixed(6);
-  return n.toPrecision(4); // very small prices — keep significant digits instead of rounding to 0
+  return n.toPrecision(4);
 }
 
 function toast(msg) {
@@ -37,13 +61,9 @@ function toast(msg) {
   toast._t = setTimeout(() => el.classList.remove('show'), 2200);
 }
 
-function findTicker(coin, exchangeName) {
-  return coin.tickers.find((t) => t.exchange === exchangeName) || null;
-}
-
-// Best-effort deep links to each exchange's futures trading page for a
-// symbol. Exchanges change their URL structure occasionally — if a link
-// ever 404s, this is the one place to fix it.
+// ---------- Exchange deep links ----------
+// Keep in sync with links.js on the backend (duplicated — no bundler to
+// share a module between frontend and backend in this project).
 const EXCHANGE_URL_BUILDERS = {
   Bybit: (rawSymbol) => `https://www.bybit.com/trade/usdt/${rawSymbol}`,
   OKX: (rawSymbol) => `https://www.okx.com/trade-swap/${rawSymbol.toLowerCase()}`,
@@ -51,6 +71,13 @@ const EXCHANGE_URL_BUILDERS = {
   Bitget: (rawSymbol) => `https://www.bitget.com/futures/usdt/${rawSymbol}`,
   'Gate.io': (rawSymbol) => `https://www.gate.io/futures_trade/USDT/${rawSymbol}`,
   MEXC: (rawSymbol) => `https://www.mexc.com/futures/${rawSymbol}`,
+  KuCoin: (rawSymbol) => `https://www.kucoin.com/futures/trade/${rawSymbol}`,
+  HTX: (rawSymbol) => `https://www.htx.com/en-us/futures/linear_swap/exchange/#contract_code=${rawSymbol}`,
+  BingX: (rawSymbol) => `https://bingx.com/en/perpetual/${rawSymbol}`,
+  ASTER: (rawSymbol) => `https://www.asterdex.com/en/futures/${rawSymbol}`,
+  Ourbit: (rawSymbol) => `https://futures.ourbit.com/exchange/${rawSymbol}`,
+  KCEX: (rawSymbol) => `https://www.kcex.com/futures/exchange/${rawSymbol}`,
+  BitMart: (rawSymbol) => `https://www.bitmart.com/futures/en?symbol=${rawSymbol}`,
 };
 
 function buildExchangeUrl(exchange, rawSymbol) {
@@ -58,10 +85,6 @@ function buildExchangeUrl(exchange, rawSymbol) {
   return build ? build(rawSymbol) : null;
 }
 
-// Inside Telegram's Mini App WebView, a plain window.open() can be blocked
-// or swallowed — Telegram.WebApp.openLink() is the supported way to hand a
-// URL off to the system browser. Falls back to window.open() for testing
-// in a regular desktop/mobile browser outside Telegram.
 function openExternal(url) {
   if (!url) return;
   if (tg?.openLink) {
@@ -71,44 +94,31 @@ function openExternal(url) {
   }
 }
 
-function renderCoin(coin) {
-  const node = cardTemplate.content.cloneNode(true);
-  const card = node.querySelector('.coin-card');
+// ---------- All-pairs calculation (mirrors exchanges.js computeAllPairs) ----------
+function computeAllPairs(tickers) {
+  const pairs = [];
+  for (let i = 0; i < tickers.length; i++) {
+    for (let j = i + 1; j < tickers.length; j++) {
+      const a = tickers[i];
+      const b = tickers[j];
+      const spreadAB = a.ask && b.bid ? ((b.bid - a.ask) / a.ask) * 100 : null;
+      const spreadBA = b.ask && a.bid ? ((a.bid - b.ask) / b.ask) * 100 : null;
 
-  node.querySelector('.coin-card__name').textContent = coin.symbol;
-
-  const badge = node.querySelector('.spread-badge');
-  const [buyPanel, sellPanel] = node.querySelectorAll('.exchange');
-  const routeEl = node.querySelector('.coin-card__route');
-
-  badge.textContent = `${coin.spread.spreadPct.toFixed(2)}%`;
-
-  const otherCount = coin.tickers.length - 2;
-  const alsoOn = otherCount > 0 ? ` · есть ещё на ${otherCount} бирж${plural(otherCount)}` : '';
-  routeEl.textContent = `купить на ${coin.spread.buyExchange} → продать на ${coin.spread.sellExchange}${alsoOn}`;
-
-  if (coin.alert) {
-    badge.classList.add('is-alert');
-    card.classList.add('is-alert');
+      if (spreadAB !== null && (spreadBA === null || spreadAB >= spreadBA)) {
+        pairs.push({ buyExchange: a.exchange, buyPrice: a.ask, buyTicker: a, sellExchange: b.exchange, sellPrice: b.bid, sellTicker: b, spreadPct: spreadAB });
+      } else if (spreadBA !== null) {
+        pairs.push({ buyExchange: b.exchange, buyPrice: b.ask, buyTicker: b, sellExchange: a.exchange, sellPrice: a.bid, sellTicker: a, spreadPct: spreadBA });
+      }
+    }
   }
-
-  fillExchangePanel(buyPanel, coin.spread.buyExchange, findTicker(coin, coin.spread.buyExchange));
-  fillExchangePanel(sellPanel, coin.spread.sellExchange, findTicker(coin, coin.spread.sellExchange));
-
-  return node;
+  pairs.sort((x, y) => y.spreadPct - x.spreadPct);
+  return pairs;
 }
 
-function plural(n) {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return 'е';
-  if ([2, 3, 4].includes(mod10) && ![12, 13, 14].includes(mod100)) return 'ах';
-  return 'ах';
-}
-
+// ---------- Shared exchange-panel filler ----------
 function fillExchangePanel(panel, name, ticker) {
   const url = ticker ? buildExchangeUrl(ticker.exchange, ticker.rawSymbol) : null;
-  const label = ticker ? `${name} · ${ticker.rawSymbol}` : name;
+  const label = ticker ? `${name}` : name;
   panel.querySelector('.exchange__name').textContent = url ? `${label} ↗` : label;
   panel.querySelector('.v-bid').textContent = ticker ? fmtPrice(ticker.bid) : '—';
   panel.querySelector('.v-ask').textContent = ticker ? fmtPrice(ticker.ask) : '—';
@@ -123,20 +133,158 @@ function fillExchangePanel(panel, name, ticker) {
   }
 }
 
-function render(coins) {
-  const query = searchInput.value.trim().toLowerCase();
+function fillPairExchanges(container, pair) {
+  const [buyPanel, sellPanel] = container.querySelectorAll('.exchange');
+  fillExchangePanel(buyPanel, pair.buyExchange, pair.buyTicker);
+  fillExchangePanel(sellPanel, pair.sellExchange, pair.sellTicker);
+}
 
-  // No search: only show coins that actually cleared the alert threshold —
-  // that's the whole point, we don't want to dump the entire market on screen.
-  // While searching: look across everything scanned, alert or not, so the
-  // user can check a specific coin's spread on demand.
-  const pool = query ? coins : coins.filter((c) => c.alert);
-  const filtered = query ? pool.filter((c) => c.symbol.toLowerCase().includes(query)) : pool;
+// ---------- Default list: one card per coin, best pair only ----------
+function renderCoin(coin) {
+  const node = coinCardTemplate.content.cloneNode(true);
+  const card = node.querySelector('.coin-card');
 
+  node.querySelector('.coin-card__name').textContent = coin.symbol;
+
+  const badge = node.querySelector('.spread-badge');
+  const routeEl = node.querySelector('.coin-card__route');
+
+  badge.textContent = `${coin.spread.spreadPct.toFixed(2)}%`;
+  routeEl.textContent = `купить на ${coin.spread.buyExchange} → продать на ${coin.spread.sellExchange}`;
+
+  if (coin.alert) {
+    badge.classList.add('is-alert');
+    card.classList.add('is-alert');
+  }
+
+  const buyTicker = coin.tickers.find((t) => t.exchange === coin.spread.buyExchange);
+  const sellTicker = coin.tickers.find((t) => t.exchange === coin.spread.sellExchange);
+  fillPairExchanges(card, {
+    buyExchange: coin.spread.buyExchange,
+    buyTicker,
+    sellExchange: coin.spread.sellExchange,
+    sellTicker,
+  });
+
+  return node;
+}
+
+// ---------- Selected-coin detail: every pair, sorted by spread ----------
+function renderCoinGroup(coin) {
+  const node = coinGroupTemplate.content.cloneNode(true);
+  const group = node.querySelector('.coin-group');
+  group.querySelector('.coin-group__name').textContent = coin.symbol;
+
+  const pairs = computeAllPairs(coin.tickers).slice(0, MAX_PAIRS_PER_COIN);
+  group.querySelector('.coin-group__count').textContent =
+    pairs.length > 1 ? `${pairs.length} пары бирж` : `${pairs.length} пара бирж`;
+
+  const pairsWrap = group.querySelector('.coin-group__pairs');
+  for (const pair of pairs) {
+    const pairNode = pairCardTemplate.content.cloneNode(true);
+    const pairCard = pairNode.querySelector('.pair-card');
+    const spreadEl = pairNode.querySelector('.pair-card__spread');
+    spreadEl.textContent = `${pair.spreadPct.toFixed(2)}%`;
+    if (lastThreshold !== null && pair.spreadPct >= lastThreshold) {
+      spreadEl.classList.add('is-alert');
+      pairCard.classList.add('is-alert');
+    }
+    fillPairExchanges(pairCard, pair);
+    pairsWrap.appendChild(pairNode);
+  }
+
+  return node;
+}
+
+// ---------- Coin picker (details dropdown under the search bar) ----------
+function populateCoinPicker(coins) {
+  const alertCoins = coins.filter((c) => c.alert).sort((a, b) => b.spread.spreadPct - a.spread.spreadPct);
+  coinPickerListEl.innerHTML = '';
+  coinPickerCountEl.textContent = alertCoins.length > 0 ? String(alertCoins.length) : '';
+
+  if (alertCoins.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'coin-picker__empty';
+    empty.textContent = 'Пока нет монет со спредом — сначала обнови данные';
+    coinPickerListEl.appendChild(empty);
+    return;
+  }
+
+  alertCoins.forEach((coin, i) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'coin-picker__item';
+    if (i < 3) btn.classList.add('is-top');
+
+    const rank = document.createElement('span');
+    rank.className = 'coin-picker__item-rank';
+    rank.textContent = `${i + 1}.`;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'coin-picker__item-name';
+    nameSpan.textContent = coin.symbol;
+
+    const spreadSpan = document.createElement('span');
+    spreadSpan.className = 'coin-picker__item-spread';
+    spreadSpan.textContent = `${coin.spread.spreadPct.toFixed(2)}%`;
+
+    btn.appendChild(rank);
+    btn.appendChild(nameSpan);
+    btn.appendChild(spreadSpan);
+
+    btn.addEventListener('click', () => {
+      tg?.HapticFeedback?.impactOccurred('light');
+      selectedCoinSymbol = coin.symbol;
+      coinPickerEl.open = false;
+      searchInput.value = '';
+      render();
+    });
+
+    coinPickerListEl.appendChild(btn);
+  });
+}
+
+// ---------- Main render ----------
+function render() {
   listEl.innerHTML = '';
 
+  // A coin picked from the dropdown list takes priority: show every pair
+  // for just that coin, sorted highest spread first.
+  if (selectedCoinSymbol) {
+    const coin = lastData.find((c) => c.symbol === selectedCoinSymbol);
+    if (!coin) {
+      selectedCoinSymbol = null;
+      render();
+      return;
+    }
+
+    const header = document.createElement('div');
+    header.className = 'coin-detail__header';
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'coin-detail__back';
+    backBtn.textContent = '← Назад';
+    backBtn.addEventListener('click', () => {
+      selectedCoinSymbol = null;
+      render();
+    });
+    const title = document.createElement('div');
+    title.className = 'coin-detail__title';
+    title.textContent = coin.symbol;
+    header.appendChild(backBtn);
+    header.appendChild(title);
+    listEl.appendChild(header);
+
+    listEl.appendChild(renderCoinGroup(coin));
+    return;
+  }
+
+  const query = searchInput.value.trim().toLowerCase();
+  const pool = query ? lastData : lastData.filter((c) => c.alert);
+  const filtered = query ? pool.filter((c) => c.symbol.toLowerCase().includes(query)) : pool;
+
   if (filtered.length === 0) {
-    emptyStateEl.textContent = coins.length === 0
+    emptyStateEl.textContent = lastData.length === 0
       ? 'Нажми обновить, чтобы просканировать рынок'
       : query
         ? 'Ничего не найдено по этому запросу'
@@ -151,12 +299,16 @@ function render(coins) {
   }
 }
 
-async function loadPrices() {
-  refreshBtn.classList.add('spinning');
-  refreshBtn.disabled = true;
-  scanInfoEl.textContent = 'Сканирую биржи…';
+// ---------- Fetch ----------
+async function loadPrices({ silent = false } = {}) {
+  if (!silent) {
+    refreshBtn.classList.add('spinning');
+    refreshBtn.disabled = true;
+    scanInfoEl.textContent = 'Сканирую биржи…';
+  }
   try {
-    const res = await fetch('/api/prices');
+    const url = `/api/prices?minVolume=${encodeURIComponent(selectedVolume)}`;
+    const res = await fetch(url);
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || 'Ошибка сервера');
 
@@ -165,34 +317,104 @@ async function loadPrices() {
     thresholdPill.textContent = `Порог алерта: ${data.threshold}%`;
 
     let info = `Просканировано ${data.totalScanned} монет на ${data.exchangeCount} биржах · со спредом ≥ ${data.threshold}%: ${data.alertsCount}`;
-    if (data.suspiciousCount > 0) {
-      info += ` · скрыто как подозрительные (>${data.maxSaneSpreadPercent}%): ${data.suspiciousCount}`;
-    }
-    if (data.failedExchanges?.length) {
-      info += ` · нет данных: ${data.failedExchanges.join(', ')}`;
-    }
+    if (data.suspiciousCount > 0) info += ` · скрыто как подозрительные (>${data.maxSaneSpreadPercent}%): ${data.suspiciousCount}`;
+    if (data.failedExchanges?.length) info += ` · нет данных: ${data.failedExchanges.join(', ')}`;
     scanInfoEl.textContent = info;
 
-    render(lastData);
+    populateCoinPicker(lastData);
+    render();
 
-    if (data.alertsCount > 0) {
-      tg?.HapticFeedback?.notificationOccurred('warning');
-      toast(`🚨 Найдено монет со спредом: ${data.alertsCount}`);
-    } else {
-      tg?.HapticFeedback?.impactOccurred('light');
+    if (!silent) {
+      if (data.alertsCount > 0) {
+        tg?.HapticFeedback?.notificationOccurred('warning');
+        toast(`🚨 Найдено монет со спредом: ${data.alertsCount}`);
+      } else {
+        tg?.HapticFeedback?.impactOccurred('light');
+      }
     }
   } catch (err) {
     console.error(err);
-    scanInfoEl.textContent = '';
-    toast('Не удалось получить цены. Попробуй ещё раз.');
+    if (!silent) {
+      scanInfoEl.textContent = '';
+      toast('Не удалось получить цены. Попробуй ещё раз.');
+    }
   } finally {
-    refreshBtn.classList.remove('spinning');
-    refreshBtn.disabled = false;
+    if (!silent) {
+      refreshBtn.classList.remove('spinning');
+      refreshBtn.disabled = false;
+    }
   }
 }
 
-refreshBtn.addEventListener('click', loadPrices);
-searchInput.addEventListener('input', () => render(lastData));
+// ---------- Bottom nav (scan vs settings page) ----------
+function setPage(page) {
+  pageScanEl.hidden = page !== 'scan';
+  pageSettingsEl.hidden = page !== 'settings';
+  bottomNavEl.querySelectorAll('.bottom-nav__btn').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.dataset.page === page);
+  });
 
-// Load once on open so the screen isn't empty, then it's manual (refresh button) from here.
+  // Pause the 8s autorefresh while off the scan page — no point polling
+  // in the background — and resume it on return if it was on.
+  if (page !== 'scan' && autorefreshTimer) {
+    clearInterval(autorefreshTimer);
+    autorefreshTimer = null;
+  } else if (page === 'scan' && autorefreshEnabled && !autorefreshTimer) {
+    autorefreshTimer = setInterval(() => loadPrices({ silent: true }), AUTOREFRESH_MS);
+  }
+}
+
+bottomNavEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('.bottom-nav__btn');
+  if (btn) setPage(btn.dataset.page);
+});
+
+// ---------- Settings: min-volume picker ----------
+function renderVolumePickerState() {
+  volumePickerValueEl.textContent = `${selectedVolume.toLocaleString('ru-RU')} $`;
+  volumePickerListEl.querySelectorAll('.volume-picker__item').forEach((btn) => {
+    btn.classList.toggle('is-selected', Number(btn.dataset.volume) === selectedVolume);
+  });
+}
+
+volumePickerListEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('.volume-picker__item');
+  if (!btn) return;
+  selectedVolume = Number(btn.dataset.volume);
+  localStorage.setItem('minVolume', String(selectedVolume));
+  renderVolumePickerState();
+  volumePickerEl.open = false;
+  tg?.HapticFeedback?.impactOccurred('light');
+  loadPrices();
+});
+
+// ---------- Autorefresh toggle (off by default, refreshes every 8s when on) ----------
+function setAutorefresh(enabled) {
+  autorefreshEnabled = enabled;
+  localStorage.setItem('autorefresh', String(enabled));
+  autorefreshToggleEl.setAttribute('aria-pressed', String(enabled));
+
+  if (autorefreshTimer) {
+    clearInterval(autorefreshTimer);
+    autorefreshTimer = null;
+  }
+  if (enabled) {
+    autorefreshTimer = setInterval(() => loadPrices({ silent: true }), AUTOREFRESH_MS);
+  }
+}
+
+autorefreshToggleEl.addEventListener('click', () => {
+  tg?.HapticFeedback?.impactOccurred('light');
+  setAutorefresh(!autorefreshEnabled);
+});
+
+// ---------- Wiring ----------
+refreshBtn.addEventListener('click', () => loadPrices());
+searchInput.addEventListener('input', () => {
+  selectedCoinSymbol = null;
+  render();
+});
+
+renderVolumePickerState();
+setAutorefresh(autorefreshEnabled); // restore saved preference, starts the timer if it was on
 loadPrices();

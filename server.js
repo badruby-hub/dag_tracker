@@ -11,9 +11,12 @@ const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/api/prices', async (_req, res) => {
+app.get('/api/prices', async (req, res) => {
   try {
-    const report = await buildReport();
+    const minVolumeParam = req.query?.minVolume;
+    const minVolumeUsdt = minVolumeParam !== undefined ? parseFloat(minVolumeParam) : undefined;
+
+    const report = await buildReport({ minVolumeUsdt });
     res.json(report);
   } catch (err) {
     console.error('Failed to build report', err.message);

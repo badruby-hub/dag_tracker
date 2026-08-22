@@ -1,9 +1,17 @@
 const config = require('./config');
 const { scanAllCoins, EXCHANGES } = require('./exchanges');
 
-async function buildReport() {
+// overrides.minVolumeUsdt lets the Mini App settings page (or any caller)
+// use a different liquidity floor than the .env default for a single
+// request, without needing a server restart.
+async function buildReport(overrides = {}) {
+  const minVolumeUsdt =
+    overrides.minVolumeUsdt !== undefined && overrides.minVolumeUsdt !== null
+      ? overrides.minVolumeUsdt
+      : config.minVolumeUsdt;
+
   const { results, failedExchanges, exchangeCount, suspicious } = await scanAllCoins(
-    config.minVolumeUsdt,
+    minVolumeUsdt,
     config.maxSaneSpreadPercent
   );
 
@@ -19,7 +27,7 @@ async function buildReport() {
   return {
     ok: true,
     threshold: config.threshold,
-    minVolumeUsdt: config.minVolumeUsdt,
+    minVolumeUsdt,
     maxSaneSpreadPercent: config.maxSaneSpreadPercent,
     totalScanned: coins.length,
     alertsCount,
