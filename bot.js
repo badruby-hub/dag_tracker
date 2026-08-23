@@ -89,7 +89,7 @@ const mainKeyboard = {
   reply_markup: {
     keyboard: [
       [
-        { text: '🏠 Покажи все комманды' },
+        { text: '🏠 Покажи все команды' },
       ],
       [
        { text: '📊 Проверить спред сейчас' },
@@ -173,14 +173,19 @@ bot.start(async (ctx) => {
   buttons.push([Markup.button.callback('🔄 Проверить сейчас', 'check')]);
 
   await ctx.reply(
-    `Привет! Я сканирую монеты на нескольких биржах и показываю те, где спред между какими-то двумя из них ≥ ${config.threshold}%.\n\n` +
-      `Команды (доступны и через кнопку ☰ рядом со строкой ввода):\n` +
-      `/check — проверить прямо сейчас\n` +
-      `/alerts — включить автоматическую рассылку (спрошу, как часто)\n` +
-      `/alerts_off — остановить автоматическую рассылку`,
-    Markup.inlineKeyboard(buttons) &&
-    mainKeyboard
+    `Привет! Я сканирую монеты на нескольких биржах и показываю те, где спред между какими-то двумя из них ≥ ${config.threshold}%.\n`,
+    Markup.inlineKeyboard(buttons)
   );
+
+  // Reply keyboards and inline keyboards can't share one message's
+  // reply_markup — Telegram allows only one kind per message. Send the
+  // persistent bottom keyboard as a short follow-up instead; once sent it
+  // stays visible on every later message until explicitly removed.
+  await ctx.reply(`Команды доступны через кнопку, рядом со строкой ввода:\n` +
+                  `/check — проверить прямо сейчас\n` +
+                  `/alerts — включить автоматическую рассылку (спрошу, как часто)\n` +
+                  `/alerts_off — остановить автоматическую рассылку`,
+                   mainKeyboard);
 });
 
 bot.command('check', sendReport);
