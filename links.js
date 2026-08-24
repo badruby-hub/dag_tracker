@@ -17,6 +17,11 @@ const EXCHANGE_URL_BUILDERS = {
   Ourbit: (rawSymbol) => `https://futures.ourbit.com/exchange/${rawSymbol}`,
   KCEX: (rawSymbol) => `https://www.kcex.com/futures/exchange/${rawSymbol}`,
   BitMart: (rawSymbol) => `https://www.bitmart.com/ru-RU/futures/${rawSymbol}`,
+  'BitMart Spot': (rawSymbol) => `https://www.bitmart.com/ru-RU/trade?symbol=${rawSymbol}`,
+  'Gate.io Spot': (rawSymbol) => `https://www.gate.io/trade/${rawSymbol}`,
+  'HTX Spot': (rawSymbol) => `https://www.htx.com/trade/${rawSymbol.toLowerCase()}`,
+  'BingX Spot': (rawSymbol) => `https://bingx.com/en/spot/${rawSymbol.replace('-', '_')}`,
+  'KuCoin Spot': (rawSymbol) => `https://www.kucoin.com/trade/${rawSymbol}`,
 };
 
 function buildExchangeUrl(exchange, rawSymbol) {

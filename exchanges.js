@@ -30,7 +30,7 @@ function splitMultiplier(rawBase) {
   return { base: rawBase.slice(m[1].length), multiplier: parseInt(m[1], 10) };
 }
 
-function makeTicker({ exchange, rawSymbol, last, bid, ask, volumeUsdt, fundingRate }) {
+function makeTicker({ exchange, rawSymbol, last, bid, ask, volumeUsdt, fundingRate, market = 'futures' }) {
   if (!bid || !ask || !last) return null;
   const { base, multiplier } = splitMultiplier(rawSymbol.replace(/[-_]/g, ''));
   return {
@@ -39,6 +39,7 @@ function makeTicker({ exchange, rawSymbol, last, bid, ask, volumeUsdt, fundingRa
       exchange,
       rawSymbol,
       multiplier,
+      market, // 'futures' | 'spot' — spot legs can only ever be the LONG side of a pair, see computeBestSpread/computeAllPairs
       last: last / multiplier,
       bid: bid / multiplier,
       ask: ask / multiplier,
@@ -294,6 +295,10 @@ async function getAllKcexTickers() {
  * which means BitMart's contribution to a spread calc doesn't reflect a
  * real bid/ask cost the way the other exchanges do (slightly optimistic).
  * Also filters out delisted contracts (status must be "Trading").
+ *
+ * This approximation can be badly wrong on thin/illiquid contracts — see
+ * getRealBitMartDepth() below, which double-checks the shortlisted coins
+ * against BitMart's real order book before anything is shown as an alert.
  */
 async function getAllBitMartTickers() {
   const { data } = await http.get('https://api-cloud-v2.bitmart.com/contract/public/details', {
@@ -314,9 +319,88 @@ async function getAllBitMartTickers() {
       volumeUsdt: parseFloat(item.turnover_24h) || 0,
       fundingRate: parseFloat(item.funding_rate),
     });
-    if (entry) map.set(entry.base, entry.ticker);
+    if (entry) {
+      entry.ticker.approximated = true; // bid/ask = last_price until enrichBitMartFinalists checks the real book
+      map.set(entry.base, entry.ticker);
+    }
   }
   return map;
+}
+
+/**
+ * BitMart's real order book for one contract — used only as a targeted
+ * follow-up check (see enrichBitMartFinalists), NOT for the initial bulk
+ * scan: this is per-symbol and rate-limited to 12 req/2s, so calling it for
+ * every BitMart contract (700+) isn't viable.
+ * https://developer-pro.bitmart.com/en/futures/#get-market-depth
+ */
+async function getRealBitMartDepth(rawSymbol) {
+  const { data } = await http.get('https://api-cloud-v2.bitmart.com/contract/public/depth', {
+    params: { symbol: rawSymbol },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+
+  const bestBid = data?.data?.bids?.[0]?.[0]; // bids sorted descending — [0] is the highest
+  const bestAsk = data?.data?.asks?.[0]?.[0]; // asks sorted ascending — [0] is the lowest
+  if (!bestBid || !bestAsk) return null;
+
+  return { bid: parseFloat(bestBid), ask: parseFloat(bestAsk) };
+}
+
+/**
+ * BitMart's ticker approximation (bid = ask = last_price) can make a coin
+ * with a nearly-empty order book look like a juicy arbitrage opportunity
+ * when it's really just illiquid — the real best bid can sit far below the
+ * last traded price (exactly what a thin, barely-traded contract looks
+ * like). Before anything is shown as an alert, re-check the handful of
+ * coins where BitMart is on one side of the winning pair against its real
+ * order book, and recompute the honest spread.
+ *
+ * Bounded to maxChecks so we never come close to BitMart's 12 req/2s rate
+ * limit even if dozens of coins would otherwise qualify.
+ */
+async function enrichBitMartFinalists(results, maxSaneSpreadPct, maxChecks = 15) {
+  const candidates = results
+    .filter((r) => r.spread.buyExchange === 'BitMart' || r.spread.sellExchange === 'BitMart')
+    .slice(0, maxChecks);
+
+  await Promise.all(
+    candidates.map(async (r) => {
+      const bmTicker = r.tickers.find((t) => t.exchange === 'BitMart');
+      if (!bmTicker) return;
+      try {
+        const real = await getRealBitMartDepth(bmTicker.rawSymbol);
+        if (!real) return;
+        bmTicker.bid = real.bid / bmTicker.multiplier;
+        bmTicker.ask = real.ask / bmTicker.multiplier;
+        bmTicker.approximated = false;
+      } catch {
+        // Depth fetch failed (rate limit, delisted mid-scan, etc) — leave
+        // the last_price approximation in place rather than breaking the scan.
+      }
+    })
+  );
+
+  // Recompute spread for every coin we touched — the real book might not
+  // even involve BitMart in the winning pair anymore, or might no longer
+  // clear the sanity threshold at all.
+  const stillSane = [];
+  const nowSuspicious = [];
+  for (const r of candidates) {
+    r.spread = computeBestSpread(r.tickers);
+    if (!r.spread) continue;
+    if (r.spread.spreadPct > maxSaneSpreadPct) {
+      nowSuspicious.push({ symbol: r.symbol, spread: r.spread });
+    } else {
+      stillSane.push(r);
+    }
+  }
+
+  const candidateSymbols = new Set(candidates.map((r) => r.symbol));
+  const untouched = results.filter((r) => !candidateSymbols.has(r.symbol));
+  const merged = [...untouched, ...stillSane].sort((a, b) => b.spread.spreadPct - a.spread.spreadPct);
+
+  return { results: merged, newlySuspicious: nowSuspicious };
 }
 
 /**
@@ -445,6 +529,157 @@ async function getAllAsterTickers() {
   return map;
 }
 
+/**
+ * BitMart SPOT — real bid/ask in this one (unlike the futures ticker
+ * above), and for a lot of small-cap coins the spot market is far more
+ * liquid than the futures listing. Response is a positional array, not
+ * objects with named keys — see the index map below.
+ * https://developer-pro.bitmart.com/en/spot/#get-ticker-of-all-pairs-v3
+ */
+async function getAllBitMartSpotTickers() {
+  const { data } = await http.get('https://api-cloud.bitmart.com/spot/quotation/v3/tickers', {
+    timeout: HTTP_TIMEOUT_MS,
+  });
+
+  // [symbol, last, v_24h, qv_24h, open_24h, high_24h, low_24h, fluctuation, bid_px, bid_sz, ask_px, ask_sz, ts]
+  const IDX = { symbol: 0, last: 1, qv24h: 3, bidPx: 8, askPx: 10 };
+
+  const map = new Map();
+  for (const row of data?.data || []) {
+    const symbol = row[IDX.symbol];
+    if (!symbol?.endsWith('_USDT')) continue;
+
+    const entry = makeTicker({
+      exchange: 'BitMart Spot',
+      rawSymbol: symbol,
+      last: parseFloat(row[IDX.last]),
+      bid: parseFloat(row[IDX.bidPx]),
+      ask: parseFloat(row[IDX.askPx]),
+      volumeUsdt: parseFloat(row[IDX.qv24h]) || 0,
+      fundingRate: null, // spot has no funding rate
+      market: 'spot',
+    });
+    if (entry) map.set(entry.base, entry.ticker);
+  }
+  return map;
+}
+
+/**
+ * Gate.io SPOT — real bid/ask (lowest_ask / highest_bid), confirmed live.
+ * https://www.gate.io/docs/developers/apiv4/en/#retrieve-ticker-information
+ */
+async function getAllGateioSpotTickers() {
+  const { data } = await http.get('https://api.gateio.ws/api/v4/spot/tickers', { timeout: HTTP_TIMEOUT_MS });
+
+  const map = new Map();
+  for (const item of data || []) {
+    if (!item.currency_pair?.endsWith('_USDT')) continue;
+
+    const entry = makeTicker({
+      exchange: 'Gate.io Spot',
+      rawSymbol: item.currency_pair,
+      last: parseFloat(item.last),
+      bid: parseFloat(item.highest_bid),
+      ask: parseFloat(item.lowest_ask),
+      volumeUsdt: parseFloat(item.quote_volume) || 0,
+      fundingRate: null,
+      market: 'spot',
+    });
+    if (entry) map.set(entry.base, entry.ticker);
+  }
+  return map;
+}
+
+/**
+ * HTX SPOT — real bid/ask, confirmed live. Symbols are lowercase with no
+ * separator (e.g. "btcusdt"), unlike HTX's futures contract_code format.
+ * https://huobiapi.github.io/docs/spot/v1/en/#get-latest-tickers-for-all-pairs
+ */
+async function getAllHtxSpotTickers() {
+  const { data } = await http.get('https://api.huobi.pro/market/tickers', { timeout: HTTP_TIMEOUT_MS });
+
+  const map = new Map();
+  for (const item of data?.data || []) {
+    if (!item.symbol?.endsWith('usdt')) continue;
+
+    const entry = makeTicker({
+      exchange: 'HTX Spot',
+      rawSymbol: item.symbol.toUpperCase(),
+      last: parseFloat(item.close),
+      bid: parseFloat(item.bid),
+      ask: parseFloat(item.ask),
+      volumeUsdt: parseFloat(item.vol) || 0, // 'vol' is quote-currency volume on Huobi/HTX, 'amount' is base
+      fundingRate: null,
+      market: 'spot',
+    });
+    if (entry) map.set(entry.base, entry.ticker);
+  }
+  return map;
+}
+
+/**
+ * BingX SPOT. Endpoint confirmed live via BingX docs, but exact field
+ * names here are inferred from BingX's own futures ticker convention
+ * (same team, same API style) rather than a directly-sighted spot sample —
+ * slightly lower confidence than the other three additions in this block.
+ * If this comes back empty, check the raw response shape first.
+ * https://bingx-api.github.io/docs/#/spot/market-api.html
+ */
+async function getAllBingxSpotTickers() {
+  const { data } = await http.get('https://open-api.bingx.com/openApi/spot/v1/ticker/24hr', {
+    timeout: HTTP_TIMEOUT_MS,
+  });
+
+  const map = new Map();
+  for (const item of data?.data || []) {
+    if (!item.symbol?.endsWith('-USDT')) continue;
+
+    const entry = makeTicker({
+      exchange: 'BingX Spot',
+      rawSymbol: item.symbol,
+      last: parseFloat(item.lastPrice ?? item.trades),
+      bid: parseFloat(item.bidPrice),
+      ask: parseFloat(item.askPrice),
+      volumeUsdt: parseFloat(item.quoteVolume) || 0,
+      fundingRate: null,
+      market: 'spot',
+    });
+    if (entry) map.set(entry.base, entry.ticker);
+  }
+  return map;
+}
+
+/**
+ * KuCoin SPOT — real bid/ask (buy/sell fields), confirmed live via official docs.
+ * https://www.kucoin.com/docs-new/rest/spot-trading/market-data/get-all-tickers
+ */
+async function getAllKuCoinSpotTickers() {
+  const { data } = await http.get('https://api.kucoin.com/api/v1/market/allTickers', {
+    timeout: HTTP_TIMEOUT_MS,
+  });
+
+  const map = new Map();
+  for (const item of data?.data?.ticker || []) {
+    if (!item.symbol?.endsWith('-USDT')) continue;
+
+    const entry = makeTicker({
+      exchange: 'KuCoin Spot',
+      rawSymbol: item.symbol,
+      last: parseFloat(item.last),
+      bid: parseFloat(item.buy),
+      ask: parseFloat(item.sell),
+      volumeUsdt: parseFloat(item.volValue) || 0,
+      fundingRate: null,
+      market: 'spot',
+    });
+    if (entry) {
+      if (item.symbol === 'XBT-USDT') entry.base = 'BTC'; // KuCoin spot also uses XBT for Bitcoin
+      map.set(entry.base, entry.ticker);
+    }
+  }
+  return map;
+}
+
 const EXCHANGES = [
   { name: 'Bybit', fetch: getAllBybitTickers },
   { name: 'OKX', fetch: getAllOkxTickers },
@@ -459,6 +694,11 @@ const EXCHANGES = [
   { name: 'Ourbit', fetch: getAllOurbitTickers },
   { name: 'KCEX', fetch: getAllKcexTickers },
   { name: 'BitMart', fetch: getAllBitMartTickers },
+  { name: 'BitMart Spot', fetch: getAllBitMartSpotTickers },
+  { name: 'Gate.io Spot', fetch: getAllGateioSpotTickers },
+  { name: 'HTX Spot', fetch: getAllHtxSpotTickers },
+  { name: 'BingX Spot', fetch: getAllBingxSpotTickers },
+  { name: 'KuCoin Spot', fetch: getAllKuCoinSpotTickers },
 ];
 
 function computeBestSpread(tickers) {
@@ -468,6 +708,10 @@ function computeBestSpread(tickers) {
   for (const buyOn of tickers) {
     for (const sellOn of tickers) {
       if (buyOn === sellOn) continue;
+      // The short/sell leg has to be a real position you can open without
+      // already owning the coin — that means futures. Spot can only ever
+      // be the long leg (you buy it outright, no borrowing modeled here).
+      if (sellOn.market !== 'futures') continue;
       if (!buyOn.ask || !sellOn.bid) continue;
       const spreadPct = ((sellOn.bid - buyOn.ask) / buyOn.ask) * 100;
       if (!best || spreadPct > best.spreadPct) {
@@ -475,9 +719,11 @@ function computeBestSpread(tickers) {
           buyExchange: buyOn.exchange,
           buyPrice: buyOn.ask,
           buyRawSymbol: buyOn.rawSymbol,
+          buyMarket: buyOn.market,
           sellExchange: sellOn.exchange,
           sellPrice: sellOn.bid,
           sellRawSymbol: sellOn.rawSymbol,
+          sellMarket: sellOn.market,
           spreadPct,
         };
       }
@@ -498,8 +744,10 @@ function computeAllPairs(tickers) {
     for (let j = i + 1; j < tickers.length; j++) {
       const a = tickers[i];
       const b = tickers[j];
-      const spreadAB = a.ask && b.bid ? ((b.bid - a.ask) / a.ask) * 100 : null;
-      const spreadBA = b.ask && a.bid ? ((a.bid - b.ask) / b.ask) * 100 : null;
+      // Same rule as computeBestSpread: only a futures ticker can be the
+      // sell/short leg — spot has no "sell what you don't own" option here.
+      const spreadAB = b.market === 'futures' && a.ask && b.bid ? ((b.bid - a.ask) / a.ask) * 100 : null;
+      const spreadBA = a.market === 'futures' && b.ask && a.bid ? ((a.bid - b.ask) / b.ask) * 100 : null;
 
       if (spreadAB !== null && (spreadBA === null || spreadAB >= spreadBA)) {
         pairs.push({
@@ -575,7 +823,13 @@ async function scanAllCoins(minVolumeUsdt = 0, maxSaneSpreadPct = 50) {
   }
 
   results.sort((a, b) => b.spread.spreadPct - a.spread.spreadPct);
-  return { results, failedExchanges, exchangeCount: EXCHANGES.length, suspicious };
+
+  // Before returning, double-check the top BitMart-involved candidates
+  // against its real order book — see enrichBitMartFinalists for why.
+  const { results: verifiedResults, newlySuspicious } = await enrichBitMartFinalists(results, maxSaneSpreadPct);
+  suspicious.push(...newlySuspicious);
+
+  return { results: verifiedResults, failedExchanges, exchangeCount: EXCHANGES.length, suspicious };
 }
 
 module.exports = { EXCHANGES, computeBestSpread, computeAllPairs, scanAllCoins };

@@ -78,6 +78,11 @@ const EXCHANGE_URL_BUILDERS = {
   Ourbit: (rawSymbol) => `https://futures.ourbit.com/exchange/${rawSymbol}`,
   KCEX: (rawSymbol) => `https://www.kcex.com/futures/exchange/${rawSymbol}`,
   BitMart: (rawSymbol) => `https://www.bitmart.com/ru-RU/futures/${rawSymbol}`,
+  'BitMart Spot': (rawSymbol) => `https://www.bitmart.com/ru-RU/trade?symbol=${rawSymbol}`,
+  'Gate.io Spot': (rawSymbol) => `https://www.gate.io/trade/${rawSymbol}`,
+  'HTX Spot': (rawSymbol) => `https://www.htx.com/trade/${rawSymbol.toLowerCase()}`,
+  'BingX Spot': (rawSymbol) => `https://bingx.com/en/spot/${rawSymbol.replace('-', '_')}`,
+  'KuCoin Spot': (rawSymbol) => `https://www.kucoin.com/trade/${rawSymbol}`,
 };
 
 function buildExchangeUrl(exchange, rawSymbol) {
@@ -101,8 +106,10 @@ function computeAllPairs(tickers) {
     for (let j = i + 1; j < tickers.length; j++) {
       const a = tickers[i];
       const b = tickers[j];
-      const spreadAB = a.ask && b.bid ? ((b.bid - a.ask) / a.ask) * 100 : null;
-      const spreadBA = b.ask && a.bid ? ((a.bid - b.ask) / b.ask) * 100 : null;
+      // Only a futures ticker can be the sell/short leg — spot can't be
+      // sold short here (no borrowing modeled), only bought long.
+      const spreadAB = b.market === 'futures' && a.ask && b.bid ? ((b.bid - a.ask) / a.ask) * 100 : null;
+      const spreadBA = a.market === 'futures' && b.ask && a.bid ? ((a.bid - b.ask) / b.ask) * 100 : null;
 
       if (spreadAB !== null && (spreadBA === null || spreadAB >= spreadBA)) {
         pairs.push({ buyExchange: a.exchange, buyPrice: a.ask, buyTicker: a, sellExchange: b.exchange, sellPrice: b.bid, sellTicker: b, spreadPct: spreadAB });
@@ -118,8 +125,16 @@ function computeAllPairs(tickers) {
 // ---------- Shared exchange-panel filler ----------
 function fillExchangePanel(panel, name, ticker) {
   const url = ticker ? buildExchangeUrl(ticker.exchange, ticker.rawSymbol) : null;
-  const label = ticker ? `${name}` : name;
+  // BitMart's ticker sometimes falls back to bid=ask=last_price when it
+  // wasn't (or couldn't be) checked against the real order book — flag
+  // that so an unusually large spread involving BitMart doesn't get taken
+  // at face value.
+  const approxNote = ticker?.approximated ? ' ≈' : '';
+  const label = ticker ? `${name}${approxNote}` : name;
   panel.querySelector('.exchange__name').textContent = url ? `${label} ↗` : label;
+  panel.title = ticker?.approximated
+    ? 'Bid/Ask не подтверждены реальным стаканом — использована последняя цена сделки'
+    : '';
   panel.querySelector('.v-bid').textContent = ticker ? fmtPrice(ticker.bid) : '—';
   panel.querySelector('.v-ask').textContent = ticker ? fmtPrice(ticker.ask) : '—';
   panel.querySelector('.v-last').textContent = ticker ? fmtPrice(ticker.last) : '—';
