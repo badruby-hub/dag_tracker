@@ -11,7 +11,7 @@
   <div class="app">
     <header class="topbar">
       <div class="topbar__title">
-        <span class="topbar__eyebrow">13 бирж · фьючерсы usdt</span>
+        <span class="topbar__eyebrow">13 бирж · фьючерсы + спот</span>
         <h1>Спред-трекер</h1>
       </div>
       <button id="refreshBtn" class="icon-btn" aria-label="Обновить">
@@ -50,6 +50,7 @@
           <span class="autorefresh-toggle__dot"></span>
           <span class="autorefresh-toggle__label">Авто 8с</span>
         </button>
+        <div class="freshness" id="freshnessInfo"></div>
         <div class="scan-info" id="scanInfo"></div>
       </div>
 
@@ -59,13 +60,19 @@
         </div>
       </main>
 
-      <p class="footnote">Цены — публичные фьючерсы, 13 бирж.</p>
+      <p class="footnote">Цены — публичные фьючерсы и спот, 13 бирж.</p>
     </section>
 
     <!-- ==================== PAGE: SETTINGS ==================== -->
     <section id="pageSettings" class="page" hidden>
       <h2 class="settings-title">Настройки</h2>
-
+     <hr/>
+      <h3>Суточный объем</h3>
+           <p class="settings-hint">
+        Монеты с суточным объёмом ниже выбранного значения на любой из бирж не
+        учитываются при скане — это отсекает неликвидные пары, где "спред"
+        часто не является реальной торговой возможностью.
+      </p>
       <details class="volume-picker" id="volumePicker">
         <summary>
           Минимальный объём: <span id="volumePickerValue">—</span>
@@ -79,11 +86,33 @@
         </div>
       </details>
 
-      <p class="settings-hint">
-        Монеты с суточным объёмом ниже выбранного значения на любой из бирж не
-        учитываются при скане — это отсекает неликвидные пары, где "спред"
-        часто не является реальной торговой возможностью.
+    <hr/>
+    <h3>Фильтрация пар</h3>
+     
+          <p class="settings-hint">
+        Определяет, какие комбинации рынков сравниваются. "Спот ↔ фьючерсы" —
+        купить на споте (в лонг), продать/зашортить на фьючерсах на другой
+        бирже. Шорт всегда только через фьючерсы — продать спот, которого
+        у тебя нет, нельзя.
       </p>
+      <details class="pairmode-picker" id="pairModePicker">
+        <summary>
+          Тип пары: <span id="pairModePickerValue">—</span>
+        </summary>
+        <div class="pairmode-picker__list" id="pairModePickerList">
+          <button type="button" class="pairmode-picker__item" data-mode="all">
+            Все — фьючерсы ↔ фьючерсы и спот ↔ фьючерсы
+          </button>
+          <button type="button" class="pairmode-picker__item" data-mode="futures-futures">
+            Только фьючерсы ↔ фьючерсы
+          </button>
+          <button type="button" class="pairmode-picker__item" data-mode="spot-futures">
+            Только спот ↔ фьючерсы
+          </button>
+        </div>
+      </details>
+
+
     </section>
 
     <!-- ==================== BOTTOM NAV ==================== -->

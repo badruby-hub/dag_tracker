@@ -359,7 +359,7 @@ async function getRealBitMartDepth(rawSymbol) {
  * Bounded to maxChecks so we never come close to BitMart's 12 req/2s rate
  * limit even if dozens of coins would otherwise qualify.
  */
-async function enrichBitMartFinalists(results, maxSaneSpreadPct, maxChecks = 15) {
+async function enrichBitMartFinalists(results, maxSaneSpreadPct, pairMode = 'all', maxChecks = 15) {
   const candidates = results
     .filter((r) => r.spread.buyExchange === 'BitMart' || r.spread.sellExchange === 'BitMart')
     .slice(0, maxChecks);
@@ -387,7 +387,7 @@ async function enrichBitMartFinalists(results, maxSaneSpreadPct, maxChecks = 15)
   const stillSane = [];
   const nowSuspicious = [];
   for (const r of candidates) {
-    r.spread = computeBestSpread(r.tickers);
+    r.spread = computeBestSpread(r.tickers, pairMode);
     if (!r.spread) continue;
     if (r.spread.spreadPct > maxSaneSpreadPct) {
       nowSuspicious.push({ symbol: r.symbol, spread: r.spread });
@@ -689,6 +689,16 @@ const EXCHANGES = [
   { name: 'MEXC', fetch: getAllMexcTickers },
   { name: 'KuCoin', fetch: getAllKuCoinTickers },
   { name: 'HTX', fetch: getAllHtxTickers },
+  // 'HTX Spot' отключён: подтверждено на практике, что HTX не сразу убирает
+  // делистнутые пары из /market/tickers — тикер продолжает "тикать" живой
+  // ценой даже для монет, которых на самом деле уже нет на споте (пример:
+  // ZEC/USDT — цена в фиде была реальной и совпадала со страницей HTX, но
+  // монеты физически нет в списке спот-торговли). Наличие в тикер-фиде не
+  // гарантирует, что пара реально торгуется — нужен отдельный запрос
+  // статуса символа (что-то вроде "Get all Supported Trading Symbol"), но
+  // я не смог найти точное имя нужного поля с уверенностью. Пока честнее
+  // не показывать это как факт, чем показывать потенциально мёртвые пары.
+  // { name: 'HTX Spot', fetch: getAllHtxSpotTickers },
   { name: 'BingX', fetch: getAllBingxTickers },
   { name: 'ASTER', fetch: getAllAsterTickers },
   { name: 'Ourbit', fetch: getAllOurbitTickers },
@@ -701,7 +711,7 @@ const EXCHANGES = [
   { name: 'KuCoin Spot', fetch: getAllKuCoinSpotTickers },
 ];
 
-function computeBestSpread(tickers) {
+function computeBestSpread(tickers, pairMode = 'all') {
   if (tickers.length < 2) return null;
 
   let best = null;
@@ -712,6 +722,12 @@ function computeBestSpread(tickers) {
       // already owning the coin — that means futures. Spot can only ever
       // be the long leg (you buy it outright, no borrowing modeled here).
       if (sellOn.market !== 'futures') continue;
+      // pairMode narrows what the LONG leg is allowed to be:
+      //   'all'             — no restriction (spot or futures)
+      //   'futures-futures' — long leg must also be futures
+      //   'spot-futures'    — long leg must be spot
+      if (pairMode === 'futures-futures' && buyOn.market !== 'futures') continue;
+      if (pairMode === 'spot-futures' && buyOn.market !== 'spot') continue;
       if (!buyOn.ask || !sellOn.bid) continue;
       const spreadPct = ((sellOn.bid - buyOn.ask) / buyOn.ask) * 100;
       if (!best || spreadPct > best.spreadPct) {
@@ -738,16 +754,23 @@ function computeBestSpread(tickers) {
  * descending. Used for the "all pairs for this coin" views (coin picker
  * detail, cards mode, bot alert messages).
  */
-function computeAllPairs(tickers) {
+function computeAllPairs(tickers, pairMode = 'all') {
   const pairs = [];
+  const buyAllowed = (t) => {
+    if (pairMode === 'futures-futures') return t.market === 'futures';
+    if (pairMode === 'spot-futures') return t.market === 'spot';
+    return true;
+  };
+
   for (let i = 0; i < tickers.length; i++) {
     for (let j = i + 1; j < tickers.length; j++) {
       const a = tickers[i];
       const b = tickers[j];
       // Same rule as computeBestSpread: only a futures ticker can be the
-      // sell/short leg — spot has no "sell what you don't own" option here.
-      const spreadAB = b.market === 'futures' && a.ask && b.bid ? ((b.bid - a.ask) / a.ask) * 100 : null;
-      const spreadBA = a.market === 'futures' && b.ask && a.bid ? ((a.bid - b.ask) / b.ask) * 100 : null;
+      // sell/short leg, and pairMode narrows which market the long leg
+      // must be.
+      const spreadAB = b.market === 'futures' && buyAllowed(a) && a.ask && b.bid ? ((b.bid - a.ask) / a.ask) * 100 : null;
+      const spreadBA = a.market === 'futures' && buyAllowed(b) && b.ask && a.bid ? ((a.bid - b.ask) / b.ask) * 100 : null;
 
       if (spreadAB !== null && (spreadBA === null || spreadAB >= spreadBA)) {
         pairs.push({
@@ -787,7 +810,7 @@ function computeAllPairs(tickers) {
  * aren't actually the same asset, or one side's book is broken/stale. Those
  * are dropped rather than shown.
  */
-async function scanAllCoins(minVolumeUsdt = 0, maxSaneSpreadPct = 50) {
+async function scanAllCoins(minVolumeUsdt = 0, maxSaneSpreadPct = 50, pairMode = 'all') {
   const settled = await Promise.allSettled(EXCHANGES.map((e) => e.fetch()));
 
   const failedExchanges = [];
@@ -812,7 +835,7 @@ async function scanAllCoins(minVolumeUsdt = 0, maxSaneSpreadPct = 50) {
   const suspicious = [];
   for (const [base, tickers] of perCoin) {
     if (tickers.length < 2) continue;
-    const spread = computeBestSpread(tickers);
+    const spread = computeBestSpread(tickers, pairMode);
     if (!spread) continue;
 
     if (spread.spreadPct > maxSaneSpreadPct) {
@@ -826,7 +849,11 @@ async function scanAllCoins(minVolumeUsdt = 0, maxSaneSpreadPct = 50) {
 
   // Before returning, double-check the top BitMart-involved candidates
   // against its real order book — see enrichBitMartFinalists for why.
-  const { results: verifiedResults, newlySuspicious } = await enrichBitMartFinalists(results, maxSaneSpreadPct);
+  const { results: verifiedResults, newlySuspicious } = await enrichBitMartFinalists(
+    results,
+    maxSaneSpreadPct,
+    pairMode
+  );
   suspicious.push(...newlySuspicious);
 
   return { results: verifiedResults, failedExchanges, exchangeCount: EXCHANGES.length, suspicious };

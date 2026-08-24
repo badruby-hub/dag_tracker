@@ -15,8 +15,9 @@ app.get('/api/prices', async (req, res) => {
   try {
     const minVolumeParam = req.query?.minVolume;
     const minVolumeUsdt = minVolumeParam !== undefined ? parseFloat(minVolumeParam) : undefined;
+    const pairMode = req.query?.pairMode;
 
-    const report = await buildReport({ minVolumeUsdt });
+    const report = await buildReport({ minVolumeUsdt, pairMode });
     res.json(report);
   } catch (err) {
     console.error('Failed to build report', err.message);

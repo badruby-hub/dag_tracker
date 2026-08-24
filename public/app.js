@@ -24,6 +24,10 @@ const volumePickerEl = document.getElementById('volumePicker');
 const volumePickerListEl = document.getElementById('volumePickerList');
 const volumePickerValueEl = document.getElementById('volumePickerValue');
 const autorefreshToggleEl = document.getElementById('autorefreshToggle');
+const freshnessEl = document.getElementById('freshnessInfo');
+const pairModePickerEl = document.getElementById('pairModePicker');
+const pairModePickerListEl = document.getElementById('pairModePickerList');
+const pairModePickerValueEl = document.getElementById('pairModePickerValue');
 
 // ---------- State ----------
 let lastData = [];
@@ -34,10 +38,20 @@ const MAX_PAIRS_PER_COIN = 8; // cap how many exchange-pairs we show for one coi
 const DEFAULT_MIN_VOLUME = 100000;
 let selectedVolume = Number(localStorage.getItem('minVolume')) || DEFAULT_MIN_VOLUME;
 
+const PAIR_MODE_LABELS = {
+  all: 'Все',
+  'futures-futures': 'Фьючерсы ↔ фьючерсы',
+  'spot-futures': 'Спот ↔ фьючерсы',
+};
+let selectedPairMode = localStorage.getItem('pairMode') || 'all';
+if (!PAIR_MODE_LABELS[selectedPairMode]) selectedPairMode = 'all';
+
 const AUTOREFRESH_SECONDS = 8;
 let autorefreshEnabled = localStorage.getItem('autorefresh') === 'true';
 let autorefreshTimer = null;
 let autorefreshCountdown = AUTOREFRESH_SECONDS;
+
+let lastFetchAt = null; // Date.now() of the last successful fetch, for the freshness ticker
 
 // ---------- Formatting ----------
 function fmtPrice(n) {
@@ -101,16 +115,22 @@ function openExternal(url) {
 }
 
 // ---------- All-pairs calculation (mirrors exchanges.js computeAllPairs) ----------
-function computeAllPairs(tickers) {
+function computeAllPairs(tickers, pairMode = 'all') {
   const pairs = [];
+  const buyAllowed = (t) => {
+    if (pairMode === 'futures-futures') return t.market === 'futures';
+    if (pairMode === 'spot-futures') return t.market === 'spot';
+    return true;
+  };
+
   for (let i = 0; i < tickers.length; i++) {
     for (let j = i + 1; j < tickers.length; j++) {
       const a = tickers[i];
       const b = tickers[j];
       // Only a futures ticker can be the sell/short leg — spot can't be
       // sold short here (no borrowing modeled), only bought long.
-      const spreadAB = b.market === 'futures' && a.ask && b.bid ? ((b.bid - a.ask) / a.ask) * 100 : null;
-      const spreadBA = a.market === 'futures' && b.ask && a.bid ? ((a.bid - b.ask) / b.ask) * 100 : null;
+      const spreadAB = b.market === 'futures' && buyAllowed(a) && a.ask && b.bid ? ((b.bid - a.ask) / a.ask) * 100 : null;
+      const spreadBA = a.market === 'futures' && buyAllowed(b) && b.ask && a.bid ? ((a.bid - b.ask) / b.ask) * 100 : null;
 
       if (spreadAB !== null && (spreadBA === null || spreadAB >= spreadBA)) {
         pairs.push({ buyExchange: a.exchange, buyPrice: a.ask, buyTicker: a, sellExchange: b.exchange, sellPrice: b.bid, sellTicker: b, spreadPct: spreadAB });
@@ -191,7 +211,7 @@ function renderCoinGroup(coin) {
   const group = node.querySelector('.coin-group');
   group.querySelector('.coin-group__name').textContent = coin.symbol;
 
-  const pairs = computeAllPairs(coin.tickers).slice(0, MAX_PAIRS_PER_COIN);
+  const pairs = computeAllPairs(coin.tickers, selectedPairMode).slice(0, MAX_PAIRS_PER_COIN);
   group.querySelector('.coin-group__count').textContent =
     pairs.length > 1 ? `${pairs.length} пары бирж` : `${pairs.length} пара бирж`;
 
@@ -323,7 +343,7 @@ async function loadPrices({ silent = false } = {}) {
     scanInfoEl.textContent = 'Сканирую биржи…';
   }
   try {
-    const url = `/api/prices?minVolume=${encodeURIComponent(selectedVolume)}`;
+    const url = `/api/prices?minVolume=${encodeURIComponent(selectedVolume)}&pairMode=${encodeURIComponent(selectedPairMode)}`;
     const res = await fetch(url);
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || 'Ошибка сервера');
@@ -331,6 +351,9 @@ async function loadPrices({ silent = false } = {}) {
     lastData = data.coins;
     lastThreshold = data.threshold;
     thresholdPill.textContent = `Порог алерта: ${data.threshold}%`;
+
+    lastFetchAt = Date.now();
+    updateFreshness();
 
     let info = `Просканировано ${data.totalScanned} монет на ${data.exchangeCount} биржах · со спредом ≥ ${data.threshold}%: ${data.alertsCount}`;
     if (data.suspiciousCount > 0) info += ` · скрыто как подозрительные (>${data.maxSaneSpreadPercent}%): ${data.suspiciousCount}`;
@@ -404,6 +427,52 @@ volumePickerListEl.addEventListener('click', (e) => {
   loadPrices();
 });
 
+// ---------- Settings: pair-mode picker (all / futures-futures / spot-futures) ----------
+function renderPairModePickerState() {
+  pairModePickerValueEl.textContent = PAIR_MODE_LABELS[selectedPairMode];
+  pairModePickerListEl.querySelectorAll('.pairmode-picker__item').forEach((btn) => {
+    btn.classList.toggle('is-selected', btn.dataset.mode === selectedPairMode);
+  });
+}
+
+pairModePickerListEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('.pairmode-picker__item');
+  if (!btn) return;
+  selectedPairMode = btn.dataset.mode;
+  localStorage.setItem('pairMode', selectedPairMode);
+  renderPairModePickerState();
+  pairModePickerEl.open = false;
+  tg?.HapticFeedback?.impactOccurred('light');
+  loadPrices();
+});
+
+// ---------- Freshness ticker (independent of autorefresh — shows how old the data is even when not auto-refreshing) ----------
+const STALE_AFTER_SECONDS = 60;
+
+function updateFreshness() {
+  if (!lastFetchAt) {
+    freshnessEl.textContent = '';
+    freshnessEl.classList.remove('is-stale');
+    return;
+  }
+  const seconds = Math.floor((Date.now() - lastFetchAt) / 1000);
+  let label;
+  if (seconds < 3) label = '🕒 обновлено только что';
+  else if (seconds < 60) label = `🕒 обновлено ${seconds}с назад`;
+  else {
+    const minutes = Math.floor(seconds / 60);
+    const rem = seconds % 60;
+    label = `🕒 обновлено ${minutes}м ${rem}с назад`;
+  }
+  freshnessEl.textContent = label;
+  freshnessEl.classList.toggle('is-stale', seconds >= STALE_AFTER_SECONDS);
+}
+
+// Runs always, on a 1s tick, independent of the autorefresh toggle — the
+// point is to warn when data is going stale precisely BECAUSE autorefresh
+// might be off.
+setInterval(updateFreshness, 1000);
+
 // ---------- Autorefresh toggle (off by default, refreshes every 8s when on) ----------
 const autorefreshLabelEl = autorefreshToggleEl.querySelector('.autorefresh-toggle__label');
 
@@ -458,5 +527,6 @@ searchInput.addEventListener('input', () => {
 });
 
 renderVolumePickerState();
+renderPairModePickerState();
 setAutorefresh(autorefreshEnabled); // restore saved preference, starts the timer if it was on
 loadPrices();

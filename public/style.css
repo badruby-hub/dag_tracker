@@ -120,6 +120,10 @@ body {
   flex-basis: 100%;
 }
 
+.scanbar .freshness {
+  flex-basis: 100%;
+}
+
 .autorefresh-toggle {
   display: inline-flex;
   align-items: center;
@@ -184,6 +188,16 @@ body {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-dim);
+}
+
+.freshness {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.freshness.is-stale {
+  color: var(--sell);
 }
 
 .list {
@@ -359,7 +373,7 @@ body {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 24px;
+  bottom: 100px;
   transform: translateX(-50%);
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -623,6 +637,63 @@ body {
   line-height: 1.5;
 }
 
+.pairmode-picker {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.pairmode-picker summary {
+  padding: 13px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pairmode-picker summary::-webkit-details-marker { display: none; }
+.pairmode-picker summary::after { content: '▾'; color: var(--text-dim); }
+.pairmode-picker[open] summary { border-bottom: 1px solid var(--border); }
+
+#pairModePickerValue {
+  font-family: var(--font-mono);
+  color: var(--amber);
+  font-size: 12px;
+  text-align: right;
+}
+
+.pairmode-picker__list {
+  padding: 6px;
+}
+
+.pairmode-picker__item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 11px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.pairmode-picker__item:hover { background: var(--panel-2); }
+
+.pairmode-picker__item.is-selected {
+  color: var(--amber);
+  font-weight: 700;
+}
+
 /* ==================== Cards mode: coin groups ==================== */
 
 .coin-group {
@@ -674,3 +745,7 @@ body {
 }
 
 .pair-card__spread.is-alert { color: var(--amber); }
+
+hr{
+  margin-top: 35px;
+}
