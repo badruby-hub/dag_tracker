@@ -34,9 +34,10 @@ const MAX_PAIRS_PER_COIN = 8; // cap how many exchange-pairs we show for one coi
 const DEFAULT_MIN_VOLUME = 100000;
 let selectedVolume = Number(localStorage.getItem('minVolume')) || DEFAULT_MIN_VOLUME;
 
-const AUTOREFRESH_MS = 8000;
+const AUTOREFRESH_SECONDS = 8;
 let autorefreshEnabled = localStorage.getItem('autorefresh') === 'true';
 let autorefreshTimer = null;
+let autorefreshCountdown = AUTOREFRESH_SECONDS;
 
 // ---------- Formatting ----------
 function fmtPrice(n) {
@@ -80,7 +81,7 @@ const EXCHANGE_URL_BUILDERS = {
   BitMart: (rawSymbol) => `https://www.bitmart.com/ru-RU/futures/${rawSymbol}`,
   'BitMart Spot': (rawSymbol) => `https://www.bitmart.com/ru-RU/trade?symbol=${rawSymbol}`,
   'Gate.io Spot': (rawSymbol) => `https://www.gate.io/trade/${rawSymbol}`,
-  'HTX Spot': (rawSymbol) => `https://www.htx.com/trade/${rawSymbol.toLowerCase()}`,
+  'HTX Spot': (rawSymbol) => `https://www.htx.com/trade/${rawSymbol.slice(0, -4).toLowerCase()}_usdt/`,
   'BingX Spot': (rawSymbol) => `https://bingx.com/en/spot/${rawSymbol.replace('-', '_')}`,
   'KuCoin Spot': (rawSymbol) => `https://www.kucoin.com/trade/${rawSymbol}`,
 };
@@ -370,12 +371,12 @@ function setPage(page) {
   });
 
   // Pause the 8s autorefresh while off the scan page — no point polling
-  // in the background — and resume it on return if it was on.
+  // in the background — and resume (with a fresh countdown) on return.
   if (page !== 'scan' && autorefreshTimer) {
     clearInterval(autorefreshTimer);
     autorefreshTimer = null;
   } else if (page === 'scan' && autorefreshEnabled && !autorefreshTimer) {
-    autorefreshTimer = setInterval(() => loadPrices({ silent: true }), AUTOREFRESH_MS);
+    setAutorefresh(true);
   }
 }
 
@@ -404,6 +405,21 @@ volumePickerListEl.addEventListener('click', (e) => {
 });
 
 // ---------- Autorefresh toggle (off by default, refreshes every 8s when on) ----------
+const autorefreshLabelEl = autorefreshToggleEl.querySelector('.autorefresh-toggle__label');
+
+function updateAutorefreshLabel() {
+  autorefreshLabelEl.textContent = autorefreshEnabled ? `Авто · ${autorefreshCountdown}с` : 'Авто 8с';
+}
+
+function tickAutorefresh() {
+  autorefreshCountdown -= 1;
+  if (autorefreshCountdown <= 0) {
+    autorefreshCountdown = AUTOREFRESH_SECONDS;
+    loadPrices({ silent: true });
+  }
+  updateAutorefreshLabel();
+}
+
 function setAutorefresh(enabled) {
   autorefreshEnabled = enabled;
   localStorage.setItem('autorefresh', String(enabled));
@@ -414,8 +430,10 @@ function setAutorefresh(enabled) {
     autorefreshTimer = null;
   }
   if (enabled) {
-    autorefreshTimer = setInterval(() => loadPrices({ silent: true }), AUTOREFRESH_MS);
+    autorefreshCountdown = AUTOREFRESH_SECONDS;
+    autorefreshTimer = setInterval(tickAutorefresh, 1000);
   }
+  updateAutorefreshLabel();
 }
 
 autorefreshToggleEl.addEventListener('click', () => {
@@ -424,7 +442,16 @@ autorefreshToggleEl.addEventListener('click', () => {
 });
 
 // ---------- Wiring ----------
-refreshBtn.addEventListener('click', () => loadPrices());
+refreshBtn.addEventListener('click', () => {
+  // A manual refresh restarts the countdown too, so the next auto tick is
+  // always a full 8s away from whatever the person just did — not a
+  // leftover fraction of the previous cycle.
+  if (autorefreshEnabled) {
+    autorefreshCountdown = AUTOREFRESH_SECONDS;
+    updateAutorefreshLabel();
+  }
+  loadPrices();
+});
 searchInput.addEventListener('input', () => {
   selectedCoinSymbol = null;
   render();

@@ -147,6 +147,11 @@ body {
   transition: background 0.15s ease, box-shadow 0.15s ease;
 }
 
+.autorefresh-toggle__label {
+  display: inline-block;
+  min-width: 46px; /* keeps the button from resizing as the digit changes (8с vs Авто 8с) */
+}
+
 .autorefresh-toggle[aria-pressed="true"] {
   color: var(--buy);
   border-color: rgba(61, 214, 140, 0.35);
