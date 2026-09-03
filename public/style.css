@@ -237,9 +237,30 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 
+.coin-card__detail-btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 0.12s ease, transform 0.1s ease;
+}
+
+.coin-card__detail-btn:hover { border-color: #3a4257; }
+.coin-card__detail-btn:active { transform: scale(0.9); }
+
 .coin-card__name {
+  flex: 1;
   font-weight: 800;
   font-size: 16px;
   letter-spacing: -0.01em;
@@ -373,7 +394,7 @@ body {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 100px;
+  bottom: 24px;
   transform: translateX(-50%);
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -746,6 +767,235 @@ body {
 
 .pair-card__spread.is-alert { color: var(--amber); }
 
-hr{
-  margin-top: 35px;
+/* ==================== Featured pair: funding/entry/exit + live chart ==================== */
+
+.featured-pair {
+  margin-bottom: 14px;
+}
+
+.featured-pair__stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.featured-pair__stat {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 9px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: center;
+}
+
+.featured-pair__stat-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.2;
+}
+
+.featured-pair__stat-value {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 13.5px;
+  color: var(--text-dim);
+}
+
+/* Funding: sign-dependent — positive is money in your pocket (green),
+   negative is money out (red). Entry/exit spread are always your
+   potential profit, so always green. */
+.featured-pair__stat-value.is-green { color: var(--buy); }
+.featured-pair__stat-value.is-red { color: var(--sell); }
+
+.featured-pair__pair {
+  margin-bottom: 10px;
+}
+
+.chart-section {
+  margin-bottom: 14px;
+}
+
+.chart-section__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.live-chart-wrap {
+  background: #0b0d12;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.live-chart-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.live-chart-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--buy);
+}
+
+.live-chart-status__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--buy);
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+.live-chart-status.is-paused {
+  color: var(--text-dim);
+}
+
+.live-chart-status.is-paused .live-chart-status__dot {
+  background: var(--text-dim);
+  animation: none;
+}
+
+.live-chart-zoom {
+  display: flex;
+  gap: 4px;
+}
+
+.live-chart-zoom__btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.live-chart-zoom__btn:active { transform: scale(0.9); }
+
+.live-chart-body {
+  display: flex;
+}
+
+.live-chart-plot {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  padding-right: 52px; /* room for the y-axis labels drawn on top */
+}
+
+.live-chart-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.live-chart {
+  height: 110px;
+  display: block;
+  /* Width is set from JS in real pixels (points.length * px-per-point) so
+     the scroll container above actually has something to scroll — a
+     percentage width would just stretch to fit and never overflow. */
+}
+
+.live-chart-grid line {
+  stroke: rgba(255, 255, 255, 0.07);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.live-chart__line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.live-chart__line--entry { stroke: var(--buy); }
+.live-chart__line--exit { stroke: var(--sell); }
+
+.live-chart__dash {
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.live-chart__dash--entry { stroke: var(--buy); }
+.live-chart__dash--exit { stroke: var(--sell); }
+
+/* Value badges pinned to the right edge, at the Y position of the most
+   recent point of their line — same idea as the reference screenshot's
+   "Вход 14.37" / "Выход 14.47" tags at the end of the dashed line. */
+.live-chart-badge {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+  color: #0d1016;
+  pointer-events: none;
+}
+
+.live-chart-badge b { font-size: 11px; }
+
+.live-chart-badge--entry { background: var(--buy); }
+.live-chart-badge--exit { background: var(--sell); }
+
+.live-chart-yaxis {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 52px;
+  height: 100%;
+  pointer-events: none;
+}
+
+.live-chart-yaxis__val {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.live-chart-xaxis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding-right: 52px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.live-chart-xaxis__now {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.live-chart-hint {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin-top: 8px;
+  text-align: center;
 }

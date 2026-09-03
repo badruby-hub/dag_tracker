@@ -689,16 +689,6 @@ const EXCHANGES = [
   { name: 'MEXC', fetch: getAllMexcTickers },
   { name: 'KuCoin', fetch: getAllKuCoinTickers },
   { name: 'HTX', fetch: getAllHtxTickers },
-  // 'HTX Spot' отключён: подтверждено на практике, что HTX не сразу убирает
-  // делистнутые пары из /market/tickers — тикер продолжает "тикать" живой
-  // ценой даже для монет, которых на самом деле уже нет на споте (пример:
-  // ZEC/USDT — цена в фиде была реальной и совпадала со страницей HTX, но
-  // монеты физически нет в списке спот-торговли). Наличие в тикер-фиде не
-  // гарантирует, что пара реально торгуется — нужен отдельный запрос
-  // статуса символа (что-то вроде "Get all Supported Trading Symbol"), но
-  // я не смог найти точное имя нужного поля с уверенностью. Пока честнее
-  // не показывать это как факт, чем показывать потенциально мёртвые пары.
-  // { name: 'HTX Spot', fetch: getAllHtxSpotTickers },
   { name: 'BingX', fetch: getAllBingxTickers },
   { name: 'ASTER', fetch: getAllAsterTickers },
   { name: 'Ourbit', fetch: getAllOurbitTickers },
@@ -706,6 +696,10 @@ const EXCHANGES = [
   { name: 'BitMart', fetch: getAllBitMartTickers },
   { name: 'BitMart Spot', fetch: getAllBitMartSpotTickers },
   { name: 'Gate.io Spot', fetch: getAllGateioSpotTickers },
+  // HTX Spot: имей в виду, что подтверждено на практике — HTX не всегда
+  // сразу убирает делистнутые пары из /market/tickers (пример: ZEC/USDT
+  // тикал живой ценой, хотя монеты уже не было в списке спот-торговли).
+  // Наличие в тикер-фиде не 100% гарантирует, что пара реально торгуется.
   { name: 'HTX Spot', fetch: getAllHtxSpotTickers },
   { name: 'BingX Spot', fetch: getAllBingxSpotTickers },
   { name: 'KuCoin Spot', fetch: getAllKuCoinSpotTickers },
@@ -859,4 +853,360 @@ async function scanAllCoins(minVolumeUsdt = 0, maxSaneSpreadPct = 50, pairMode =
   return { results: verifiedResults, failedExchanges, exchangeCount: EXCHANGES.length, suspicious };
 }
 
-module.exports = { EXCHANGES, computeBestSpread, computeAllPairs, scanAllCoins };
+/**
+ * Fetches just ONE exchange's full ticker map and plucks out a single
+ * symbol by its exact rawSymbol — reuses the same bulk fetchers as the
+ * main scan (no new per-exchange code needed), just discards everything
+ * except the one ticker we actually want.
+ */
+async function getSingleTicker(exchangeName, rawSymbol) {
+  const ex = EXCHANGES.find((e) => e.name === exchangeName);
+  if (!ex) return null;
+  try {
+    const map = await ex.fetch();
+    for (const ticker of map.values()) {
+      if (ticker.rawSymbol === rawSymbol) return ticker;
+    }
+    return null;
+  } catch (err) {
+    // A transient failure on ONE exchange shouldn't 500 the whole tick —
+    // the main scan already tolerates this via Promise.allSettled, this
+    // single-pair lookup needs the same tolerance.
+    console.error(`getSingleTicker: ${exchangeName} fetch failed:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Lightweight per-second "tick" for the coin detail page's live chart —
+ * re-checks just the two exchanges in a specific pair (not the whole
+ * market) and recomputes entry/exit spread fresh.
+ *
+ * entrySpreadPct — same formula as everywhere else: buy at the long
+ * exchange's ask, sell at the short exchange's bid.
+ * exitSpreadPct — the mirror image: what it'd cost to close BOTH legs
+ * right now (sell the long at its bid, buy back the short at its ask).
+ * Useful as a rough "cost to unwind immediately" signal, not a prediction.
+ */
+async function getPairTick({ buyExchange, buyRawSymbol, sellExchange, sellRawSymbol }) {
+  const [buyTicker, sellTicker] = await Promise.all([
+    getSingleTicker(buyExchange, buyRawSymbol),
+    getSingleTicker(sellExchange, sellRawSymbol),
+  ]);
+  if (!buyTicker || !sellTicker) return null;
+
+  const entrySpreadPct = ((sellTicker.bid - buyTicker.ask) / buyTicker.ask) * 100;
+  const exitSpreadPct = ((buyTicker.bid - sellTicker.ask) / sellTicker.ask) * 100;
+
+  return { buyTicker, sellTicker, entrySpreadPct, exitSpreadPct, ts: Date.now() };
+}
+
+// ---------- Historical klines (1-minute candles) for the coin detail page's history pre-load ----------
+// Not every exchange is covered — building this against ~18 different
+// kline response shapes isn't worth the risk of silently shipping a wrong
+// one. Covered: Bybit, OKX, Binance, ASTER, Bitget, Gate.io (futures +
+// spot), MEXC, KuCoin (futures). Anything else returns null and the
+// detail page just starts the live chart from scratch for that pair.
+
+function roundToMinute(ms) {
+  return Math.floor(ms / 60000) * 60000;
+}
+
+async function klinesBybit(rawSymbol, minutes) {
+  const { data } = await http.get('https://api.bybit.com/v5/market/kline', {
+    params: { category: 'linear', symbol: rawSymbol, interval: '1', limit: minutes },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const list = data?.result?.list || [];
+  return list.map((row) => ({ ts: roundToMinute(parseInt(row[0], 10)), price: parseFloat(row[4]) })).reverse();
+}
+
+async function klinesOkx(rawSymbol, minutes) {
+  const { data } = await http.get('https://www.okx.com/api/v5/market/candles', {
+    params: { instId: rawSymbol, bar: '1m', limit: minutes },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const list = data?.data || [];
+  return list.map((row) => ({ ts: roundToMinute(parseInt(row[0], 10)), price: parseFloat(row[4]) })).reverse();
+}
+
+async function klinesBinanceCompatible(baseUrl, rawSymbol, minutes) {
+  const { data } = await http.get(baseUrl, {
+    params: { symbol: rawSymbol, interval: '1m', limit: minutes },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  return (data || []).map((row) => ({ ts: roundToMinute(row[0]), price: parseFloat(row[4]) }));
+}
+
+async function klinesBitget(rawSymbol, minutes) {
+  const { data } = await http.get('https://api.bitget.com/api/v2/mix/market/candles', {
+    params: { symbol: rawSymbol, granularity: '1m', productType: 'usdt-futures', limit: minutes },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const list = data?.data || [];
+  return list.map((row) => ({ ts: roundToMinute(parseInt(row[0], 10)), price: parseFloat(row[4]) })).reverse();
+}
+
+async function klinesGateFutures(rawSymbol, minutes) {
+  const { data } = await http.get('https://api.gateio.ws/api/v4/futures/usdt/candlesticks', {
+    params: { contract: rawSymbol, interval: '1m', limit: minutes },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  return (data || []).map((row) => ({ ts: roundToMinute(row.t * 1000), price: parseFloat(row.c) }));
+}
+
+async function klinesGateSpot(rawSymbol, minutes) {
+  const { data } = await http.get('https://api.gateio.ws/api/v4/spot/candlesticks', {
+    params: { currency_pair: rawSymbol, interval: '1m', limit: minutes },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  // row: [ts, quoteVol, close, high, low, open, baseVol, ...]
+  return (data || []).map((row) => ({ ts: roundToMinute(parseInt(row[0], 10) * 1000), price: parseFloat(row[2]) }));
+}
+
+async function klinesMexc(rawSymbol, minutes) {
+  const { data } = await http.get(`https://contract.mexc.com/api/v1/contract/kline/${rawSymbol}`, {
+    params: { interval: 'Min1' },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const d = data?.data;
+  if (!d?.time) return null;
+  const n = d.time.length;
+  const points = [];
+  for (let i = Math.max(0, n - minutes); i < n; i++) {
+    points.push({ ts: roundToMinute(d.time[i] * 1000), price: parseFloat(d.close[i]) });
+  }
+  return points;
+}
+
+async function klinesKucoinFutures(rawSymbol, minutes) {
+  const to = Date.now();
+  const from = to - minutes * 60 * 1000;
+  const { data } = await http.get('https://api-futures.kucoin.com/api/v1/kline/query', {
+    params: { symbol: rawSymbol, granularity: 1, from, to },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const list = data?.data || [];
+  return list.map((row) => ({ ts: roundToMinute(row[0]), price: parseFloat(row[4]) }));
+}
+
+async function klinesKucoinSpot(rawSymbol, minutes) {
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - minutes * 60;
+  const { data } = await http.get('https://api.kucoin.com/api/v1/market/candles', {
+    params: { symbol: rawSymbol, type: '1min', startAt: from, endAt: to },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const list = data?.data || [];
+  // row: [time, open, close, high, low, volume, turnover] — time in seconds, newest-first
+  return list.map((row) => ({ ts: roundToMinute(parseInt(row[0], 10) * 1000), price: parseFloat(row[2]) })).reverse();
+}
+
+/**
+ * HTX (Huobi-family) klines — same response shape for both spot and
+ * linear-swap futures, just a different path/param name for the symbol.
+ * Confirmed live: https://api.hbdm.com/linear-swap-ex/market/history/kline
+ * (futures) and https://api.huobi.pro/market/history/kline (spot).
+ */
+async function klinesHtx(url, symbolParamName, rawSymbol, minutes) {
+  const { data } = await http.get(url, {
+    params: { [symbolParamName]: rawSymbol, period: '1min', size: minutes },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const list = data?.data || [];
+  // row: {id (unix seconds), open, close, high, low, vol, amount} — newest-first
+  return list.map((row) => ({ ts: roundToMinute(row.id * 1000), price: parseFloat(row.close) })).reverse();
+}
+
+/**
+ * BingX Futures klines (USDT-M swap) — confirmed live from actual server
+ * logs. Flat array of OBJECTS with named fields, NOT array-of-arrays:
+ * {open, close, high, low, volume, time (already ms)}.
+ */
+async function klinesBingxFutures(rawSymbol, minutes) {
+  const endTime = Date.now();
+  const startTime = endTime - minutes * 60 * 1000;
+  const { data } = await http.get('https://open-api.bingx.com/openApi/swap/v2/quote/klines', {
+    params: { symbol: rawSymbol, interval: '1m', startTime, endTime, limit: minutes },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const list = data?.data || [];
+  if (list.length === 0) {
+    console.error(`klinesBingxFutures: empty result for ${rawSymbol}. Raw response:`, JSON.stringify(data).slice(0, 500));
+  }
+  return list.map((row) => ({ ts: roundToMinute(row.time), price: parseFloat(row.close) }));
+}
+
+/**
+ * BingX Spot klines — a DIFFERENT shape than futures (captured earlier):
+ * candles nested under `data.klines`, each row a positional array
+ * [time, open, close, high, low, volume, quoteVolume]. Not independently
+ * re-verified against a live server log the way futures was — if this
+ * comes back empty, log the raw shape the same way futures did and fix
+ * from there.
+ */
+async function klinesBingxSpot(rawSymbol, minutes) {
+  const endTime = Date.now();
+  const startTime = endTime - minutes * 60 * 1000;
+  const { data } = await http.get('https://open-api.bingx.com/openApi/spot/v1/market/kline', {
+    params: { symbol: rawSymbol, interval: '1m', startTime, endTime, limit: minutes },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const list = data?.data?.klines || [];
+  if (list.length === 0) {
+    console.error(`klinesBingxSpot: empty result for ${rawSymbol}. Raw response:`, JSON.stringify(data).slice(0, 500));
+  }
+  return list.map((row) => ({ ts: roundToMinute(parseInt(row[0], 10)), price: parseFloat(row[2]) }));
+}
+
+/**
+ * BitMart klines (spot + futures) — both confirmed live.
+ * Futures: object rows {timestamp (unix seconds), close_price, ...}
+ * Spot: positional array rows [t, o, h, l, c, v, qv] (unix seconds)
+ */
+async function klinesBitmartFutures(rawSymbol, minutes) {
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - minutes * 60;
+  const { data } = await http.get('https://api-cloud-v2.bitmart.com/contract/public/kline', {
+    params: { symbol: rawSymbol, step: 1, start_time: start, end_time: end },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const list = data?.data || [];
+  return list.map((row) => ({ ts: roundToMinute(row.timestamp * 1000), price: parseFloat(row.close_price) }));
+}
+
+async function klinesBitmartSpot(rawSymbol, minutes) {
+  const after = Math.floor(Date.now() / 1000) - minutes * 60;
+  const { data } = await http.get('https://api-cloud-v2.bitmart.com/spot/quotation/v3/klines', {
+    params: { symbol: rawSymbol, step: 1, limit: minutes, after },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const list = data?.data || [];
+  // row: [t, o, h, l, c, v, qv] — all strings, unix seconds
+  return list.map((row) => ({ ts: roundToMinute(parseInt(row[0], 10) * 1000), price: parseFloat(row[4]) }));
+}
+
+/**
+ * Ourbit / KCEX are white-label clones of MEXC's own contract platform —
+ * their ticker endpoints already mirror MEXC's exactly (confirmed live
+ * earlier), so their kline endpoint is expected to follow the same
+ * contract/kline/{symbol}?interval=Min1 shape on their own domain.
+ */
+async function klinesMexcCompatible(baseUrl, rawSymbol, minutes) {
+  const { data } = await http.get(`${baseUrl}/${rawSymbol}`, {
+    params: { interval: 'Min1' },
+    timeout: HTTP_TIMEOUT_MS,
+  });
+  const d = data?.data;
+  if (!d?.time) return null;
+  const n = d.time.length;
+  const points = [];
+  for (let i = Math.max(0, n - minutes); i < n; i++) {
+    points.push({ ts: roundToMinute(d.time[i] * 1000), price: parseFloat(d.close[i]) });
+  }
+  return points;
+}
+
+async function getKlines1m(exchange, rawSymbol, minutes) {
+  try {
+    switch (exchange) {
+      case 'Bybit':
+        return await klinesBybit(rawSymbol, minutes);
+      case 'OKX':
+        return await klinesOkx(rawSymbol, minutes);
+      case 'Binance':
+        return await klinesBinanceCompatible('https://fapi.binance.com/fapi/v1/klines', rawSymbol, minutes);
+      case 'ASTER':
+        return await klinesBinanceCompatible('https://fapi.asterdex.com/fapi/v1/klines', rawSymbol, minutes);
+      case 'Bitget':
+        return await klinesBitget(rawSymbol, minutes);
+      case 'Gate.io':
+        return await klinesGateFutures(rawSymbol, minutes);
+      case 'Gate.io Spot':
+        return await klinesGateSpot(rawSymbol, minutes);
+      case 'MEXC':
+        return await klinesMexc(rawSymbol, minutes);
+      case 'KuCoin':
+        return await klinesKucoinFutures(rawSymbol, minutes);
+      case 'KuCoin Spot':
+        return await klinesKucoinSpot(rawSymbol, minutes);
+      case 'HTX':
+        return await klinesHtx('https://api.hbdm.com/linear-swap-ex/market/history/kline', 'contract_code', rawSymbol, minutes);
+      case 'HTX Spot':
+        // HTX Spot displays rawSymbol uppercase (for links/UI), but the
+        // spot kline endpoint's symbol param is lowercase, same as its
+        // own ticker feed used ("zecusdt", not "ZECUSDT").
+        return await klinesHtx('https://api.huobi.pro/market/history/kline', 'symbol', rawSymbol.toLowerCase(), minutes);
+      case 'BingX':
+        return await klinesBingxFutures(rawSymbol, minutes);
+      case 'BingX Spot':
+        return await klinesBingxSpot(rawSymbol, minutes);
+      case 'BitMart':
+        return await klinesBitmartFutures(rawSymbol, minutes);
+      case 'BitMart Spot':
+        return await klinesBitmartSpot(rawSymbol, minutes);
+      case 'Ourbit':
+        return await klinesMexcCompatible('https://futures.ourbit.com/api/v1/contract/kline', rawSymbol, minutes);
+      case 'KCEX':
+        return await klinesMexcCompatible('https://www.kcex.com/fapi/v1/contract/kline', rawSymbol, minutes);
+      default:
+        return null; // not covered — caller falls back to "no history"
+    }
+  } catch (err) {
+    console.error(`klines failed for ${exchange} ${rawSymbol}:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Merged history for a specific pair: for every minute where BOTH sides
+ * have a candle, one point with both prices. Returns null if either side
+ * isn't a covered exchange or the fetch failed — the frontend then just
+ * starts the live chart from scratch instead of faking history.
+ */
+async function getPairHistory({ buyExchange, buyRawSymbol, sellExchange, sellRawSymbol, minutes = 60 }) {
+  const [buyKlines, sellKlines] = await Promise.all([
+    getKlines1m(buyExchange, buyRawSymbol, minutes),
+    getKlines1m(sellExchange, sellRawSymbol, minutes),
+  ]);
+
+  if (!buyKlines || buyKlines.length === 0) {
+    console.error(`getPairHistory: no klines for LONG side ${buyExchange} ${buyRawSymbol}`);
+    return null;
+  }
+  if (!sellKlines || sellKlines.length === 0) {
+    console.error(`getPairHistory: no klines for SHORT side ${sellExchange} ${sellRawSymbol}`);
+    return null;
+  }
+
+  // Exact-timestamp matching would fail entirely if two exchanges' candle
+  // boundaries are offset by even a few seconds — allow a small tolerance
+  // instead of requiring millisecond-perfect alignment.
+  const TOLERANCE_MS = 45 * 1000;
+  const merged = [];
+  for (const b of buyKlines) {
+    let closest = null;
+    let closestDiff = Infinity;
+    for (const s of sellKlines) {
+      const diff = Math.abs(s.ts - b.ts);
+      if (diff < closestDiff) {
+        closestDiff = diff;
+        closest = s;
+      }
+    }
+    if (closest && closestDiff <= TOLERANCE_MS) {
+      merged.push({ ts: b.ts, longPrice: b.price, shortPrice: closest.price });
+    }
+  }
+
+  if (merged.length < 2) {
+    console.error(
+      `getPairHistory: got klines for both sides (${buyKlines.length} long / ${sellKlines.length} short) ` +
+        `but timestamps didn't overlap for ${buyExchange}+${sellExchange} even with tolerance.`
+    );
+    return null;
+  }
+  return merged;
+}
+
+module.exports = { EXCHANGES, computeBestSpread, computeAllPairs, scanAllCoins, getPairTick, getPairHistory };

@@ -60,25 +60,20 @@
         </div>
       </main>
 
-      <p class="footnote">Цены — публичные фьючерсы и спот, 13 бирж.</p>
+      <p class="footnote">Цены — публичные фьючерсы и спот (BitMart), 13 бирж.</p>
     </section>
 
     <!-- ==================== PAGE: SETTINGS ==================== -->
     <section id="pageSettings" class="page" hidden>
       <h2 class="settings-title">Настройки</h2>
-     <hr/>
-      <h3>Суточный объем</h3>
-           <p class="settings-hint">
-        Монеты с суточным объёмом ниже выбранного значения на любой из бирж не
-        учитываются при скане — это отсекает неликвидные пары, где "спред"
-        часто не является реальной торговой возможностью.
-      </p>
+
       <details class="volume-picker" id="volumePicker">
         <summary>
           Минимальный объём: <span id="volumePickerValue">—</span>
         </summary>
         <div class="volume-picker__list" id="volumePickerList">
           <button type="button" class="volume-picker__item" data-volume="100000">100 000 $</button>
+          <button type="button" class="volume-picker__item" data-volume="200000">200 000 $</button>
           <button type="button" class="volume-picker__item" data-volume="500000">500 000 $</button>
           <button type="button" class="volume-picker__item" data-volume="1000000">1 000 000 $</button>
           <button type="button" class="volume-picker__item" data-volume="5000000">5 000 000 $</button>
@@ -86,22 +81,19 @@
         </div>
       </details>
 
-    <hr/>
-    <h3>Фильтрация пар</h3>
-     
-          <p class="settings-hint">
-        Определяет, какие комбинации рынков сравниваются. "Спот ↔ фьючерсы" —
-        купить на споте (в лонг), продать/зашортить на фьючерсах на другой
-        бирже. Шорт всегда только через фьючерсы — продать спот, которого
-        у тебя нет, нельзя.
+      <p class="settings-hint">
+        Монеты с суточным объёмом ниже выбранного значения на любой из бирж не
+        учитываются при скане — это отсекает неликвидные пары, где "спред"
+        часто не является реальной торговой возможностью.
       </p>
+
       <details class="pairmode-picker" id="pairModePicker">
         <summary>
           Тип пары: <span id="pairModePickerValue">—</span>
         </summary>
         <div class="pairmode-picker__list" id="pairModePickerList">
           <button type="button" class="pairmode-picker__item" data-mode="all">
-            Все — фьючерсы ↔ фьючерсы и спот ↔ фьючерсы
+            Все — фьючерсы↔фьючерсы и спот↔фьючерсы
           </button>
           <button type="button" class="pairmode-picker__item" data-mode="futures-futures">
             Только фьючерсы ↔ фьючерсы
@@ -112,7 +104,12 @@
         </div>
       </details>
 
-
+      <p class="settings-hint">
+        Определяет, какие комбинации рынков сравниваются. "Спот↔фьючерсы" —
+        купить на споте (в лонг), продать/зашортить на фьючерсах на другой
+        бирже. Шорт всегда только через фьючерсы — продать спот, которого
+        у тебя нет, нельзя.
+      </p>
     </section>
 
     <!-- ==================== BOTTOM NAV ==================== -->
@@ -131,6 +128,7 @@
   <template id="coinCardTemplate">
     <section class="coin-card">
       <div class="coin-card__header">
+        <button type="button" class="coin-card__detail-btn" aria-label="Подробнее">📖</button>
         <div class="coin-card__name"></div>
         <div class="coin-card__spread-wrap">
           <span class="spread-badge"></span>
@@ -204,6 +202,76 @@
       </div>
       <div class="coin-group__pairs"></div>
     </section>
+  </template>
+
+  <!-- Featured block for the "best" pair on the detail page: funding/entry/
+       exit summary + a live-updating spread chart. Filled in and inserted
+       above the pairs list by app.js; not present in every normal card. -->
+  <template id="featuredPairTemplate">
+    <section class="featured-pair">
+      <div class="featured-pair__stats">
+        <div class="featured-pair__stat">
+          <span class="featured-pair__stat-label">Спред фандинга</span>
+          <span class="featured-pair__stat-value fp-funding"></span>
+        </div>
+        <div class="featured-pair__stat">
+          <span class="featured-pair__stat-label">Спред входа</span>
+          <span class="featured-pair__stat-value fp-entry is-green"></span>
+        </div>
+        <div class="featured-pair__stat">
+          <span class="featured-pair__stat-label">Спред выхода</span>
+          <span class="featured-pair__stat-value fp-exit is-green"></span>
+        </div>
+      </div>
+
+      <div class="featured-pair__pair"></div>
+
+      <div class="chart-section">
+        <div class="chart-section__title">Живой график</div>
+        <div class="chart-slot chart-slot--live"></div>
+      </div>
+
+      <div class="chart-section">
+        <div class="chart-section__title">История спредов</div>
+        <div class="chart-slot chart-slot--history"></div>
+      </div>
+    </section>
+  </template>
+
+  <!-- Reusable chart block — cloned twice per coin page: once for the
+       ticking "live" chart, once for the one-shot "История спредов"
+       chart. Same visual structure, different data source/update cadence. -->
+  <template id="chartBlockTemplate">
+    <div class="live-chart-wrap">
+      <div class="live-chart-toolbar">
+        <span class="live-chart-status"><span class="live-chart-status__dot"></span><span class="live-chart-status__text"></span></span>
+        <div class="live-chart-zoom">
+          <button type="button" class="live-chart-zoom__btn" data-zoom="out">−</button>
+          <button type="button" class="live-chart-zoom__btn" data-zoom="in">+</button>
+        </div>
+      </div>
+      <div class="live-chart-body">
+        <div class="live-chart-plot">
+          <div class="live-chart-scroll">
+            <svg class="live-chart" viewBox="0 0 300 110" preserveAspectRatio="none">
+              <g class="live-chart-grid"></g>
+              <path class="live-chart__line live-chart__line--exit" d=""></path>
+              <path class="live-chart__line live-chart__line--entry" d=""></path>
+              <line class="live-chart__dash live-chart__dash--exit" x1="0" y1="0" x2="0" y2="0"></line>
+              <line class="live-chart__dash live-chart__dash--entry" x1="0" y1="0" x2="0" y2="0"></line>
+            </svg>
+          </div>
+          <span class="live-chart-badge live-chart-badge--exit">Выход <b></b></span>
+          <span class="live-chart-badge live-chart-badge--entry">Вход <b></b></span>
+          <div class="live-chart-yaxis"></div>
+        </div>
+      </div>
+      <div class="live-chart-xaxis">
+        <span class="live-chart-xaxis__start"></span>
+        <span class="live-chart-xaxis__now"></span>
+      </div>
+      <div class="live-chart-hint"></div>
+    </div>
   </template>
 
   <script src="app.js"></script>
