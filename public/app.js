@@ -306,10 +306,10 @@ const MAX_LIVE_POINTS = 300; // ~5 minutes of live 1/sec ticks kept in memory
 // Two fully independent chart instances: `live` ticks every second and
 // never touches history; `history` is loaded ONCE (on opening the coin
 // page) from the exchanges' own candles and never auto-refreshes.
-// windowSize here means "pixels per point" (zoom level) — the chart draws
-// at its real content width and scrolls, it doesn't slice a fixed window.
-let live = { key: null, timer: null, points: [], windowSize: 8, els: null };
-let history = { key: null, points: [], windowSize: 8, els: null };
+// windowSize means "pixels per point" (horizontal zoom); yZoom scales the
+// vertical price range around its center (>1 = zoomed in, <1 = zoomed out).
+let live = { key: null, timer: null, points: [], windowSize: 8, yZoom: 1, els: null };
+let history = { key: null, points: [], windowSize: 8, yZoom: 1, els: null };
 
 function fmtSignedPct(pct) {
   if (pct === null || pct === undefined || Number.isNaN(pct)) return '—';
@@ -317,9 +317,10 @@ function fmtSignedPct(pct) {
   return `${sign}${pct.toFixed(3)}%`;
 }
 
-// Clones the shared chart template into a container and wires up its zoom
-// buttons against whichever chart object (`live` or `history`) it belongs
-// to. Returns the collected DOM refs used by drawChart()/updateStatus().
+// Clones the shared chart template into a container and wires up
+// drag/scroll-to-zoom gestures on its price and time axes (replacing the
+// old +/- buttons with the same interaction real exchange charts use).
+// Returns the collected DOM refs used by drawChart()/updateStatus().
 function buildChartEls(container, chart, statusText, hintText) {
   const node = chartBlockTemplate.content.cloneNode(true);
   const wrap = node.querySelector('.live-chart-wrap');
@@ -333,6 +334,7 @@ function buildChartEls(container, chart, statusText, hintText) {
     exitBadgeEl: wrap.querySelector('.live-chart-badge--exit b'),
     gridEl: wrap.querySelector('.live-chart-grid'),
     yaxisEl: wrap.querySelector('.live-chart-yaxis'),
+    xaxisEl: wrap.querySelector('.live-chart-xaxis'),
     xaxisStartEl: wrap.querySelector('.live-chart-xaxis__start'),
     xaxisNowEl: wrap.querySelector('.live-chart-xaxis__now'),
     statusEl: wrap.querySelector('.live-chart-status'),
@@ -341,16 +343,17 @@ function buildChartEls(container, chart, statusText, hintText) {
   els.statusEl.querySelector('.live-chart-status__text').textContent = statusText;
   wrap.querySelector('.live-chart-hint').textContent = hintText;
 
-  wrap.querySelectorAll('.live-chart-zoom__btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      tg?.HapticFeedback?.impactOccurred('light');
-      if (btn.dataset.zoom === 'in') {
-        chart.windowSize = Math.min(PX_PER_POINT_MAX, chart.windowSize + 3);
-      } else {
-        chart.windowSize = Math.max(PX_PER_POINT_MIN, chart.windowSize - 3);
-      }
-      drawChart(chart);
-    });
+  // Price axis (right side): drag/scroll vertically to zoom the price scale.
+  wireAxisGesture(els.yaxisEl, true, (delta) => {
+    chart.yZoom = clamp(chart.yZoom * Math.exp(delta * 0.006), Y_ZOOM_MIN, Y_ZOOM_MAX);
+    drawChart(chart);
+  });
+
+  // Time axis (bottom): drag/scroll horizontally to zoom the time scale —
+  // this is the direct replacement for the old +/- buttons.
+  wireAxisGesture(els.xaxisEl, false, (delta) => {
+    chart.windowSize = clamp(chart.windowSize + delta * 0.15, PX_PER_POINT_MIN, PX_PER_POINT_MAX);
+    drawChart(chart);
   });
 
   container.innerHTML = '';
@@ -418,7 +421,54 @@ let statEls = null; // {fundingEl, entryEl, exitEl, pairCard} — the bits of th
 const CHART_H = 110;
 const CHART_PAD = 8;
 const PX_PER_POINT_MIN = 4;
-const PX_PER_POINT_MAX = 30;
+const PX_PER_POINT_MAX = 40;
+const Y_ZOOM_MIN = 0.3;
+const Y_ZOOM_MAX = 5;
+
+function clamp(v, min, max) {
+  return Math.min(max, Math.max(min, v));
+}
+
+// Drag-or-scroll gesture on an axis strip, like a real exchange chart:
+// grabbing the price labels and dragging (or scrolling over them) rescales
+// vertically; grabbing the time labels does the same horizontally. Works
+// with touch (pointer events) and mouse wheel alike.
+function wireAxisGesture(el, isY, onZoomDelta) {
+  let dragging = false;
+  let lastPos = 0;
+  const getPos = (e) => (isY ? e.clientY : e.clientX);
+
+  el.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    lastPos = getPos(e);
+    el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const pos = getPos(e);
+    const rawDelta = pos - lastPos;
+    lastPos = pos;
+    if (rawDelta === 0) return;
+    // Natural feel: on the price axis, dragging UP zooms in; on the time
+    // axis, dragging RIGHT zooms in.
+    onZoomDelta(isY ? -rawDelta : rawDelta);
+  });
+  const stopDrag = () => {
+    dragging = false;
+  };
+  el.addEventListener('pointerup', stopDrag);
+  el.addEventListener('pointercancel', stopDrag);
+  el.addEventListener('pointerleave', stopDrag);
+
+  el.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault();
+      onZoomDelta(-e.deltaY);
+    },
+    { passive: false }
+  );
+}
 
 // Builds a smooth "wave" curve through the points (quadratic Bézier
 // through each segment's midpoint) instead of straight zig-zag segments —
@@ -460,18 +510,33 @@ function drawChart(chart) {
   const points = chart.points;
   if (points.length < 1) return;
 
-  const pxPerPoint = chart.windowSize; // reused field, now means "px per point"
-  const chartW = Math.max(1, (points.length - 1)) * pxPerPoint || 1;
+  const pxPerPoint = chart.windowSize; // "px per point" — horizontal zoom
+  const rawChartW = Math.max(1, (points.length - 1)) * pxPerPoint || 1;
 
   const allValues = points.flatMap((p) => [p.longPrice, p.shortPrice]);
-  const min = Math.min(...allValues);
-  const max = Math.max(...allValues);
+  const rawMin = Math.min(...allValues);
+  const rawMax = Math.max(...allValues);
+  const center = (rawMin + rawMax) / 2;
+  // yZoom > 1 shrinks the effective range around the center (taller,
+  // "zoomed in" candles); yZoom < 1 widens it (flatter, "zoomed out").
+  // The fallback half-range keeps a perfectly flat series from collapsing
+  // to a zero-height, undividable range.
+  const rawHalfRange = (rawMax - rawMin) / 2 || Math.abs(center) * 0.0005 || 1;
+  const halfRange = rawHalfRange / (chart.yZoom || 1);
+  const min = center - halfRange;
+  const max = center + halfRange;
   const range = max - min || 1;
 
   const yFor = (v) => CHART_H - CHART_PAD - ((v - min) / range) * (CHART_H - CHART_PAD * 2);
   const xFor = (i) => i * pxPerPoint;
 
   const svgEl = els.entryLineEl.ownerSVGElement;
+  const scrollEl = svgEl.parentElement; // .live-chart-scroll
+  // Never render narrower than the visible box — otherwise a zoomed-out
+  // chart (little content) just shrinks into a small block instead of
+  // filling the available width. Only once there's genuinely more content
+  // than fits does it become wider than the box (and thus scrollable).
+  const chartW = Math.max(rawChartW, scrollEl.clientWidth || 0);
   svgEl.setAttribute('viewBox', `0 0 ${chartW} ${CHART_H}`);
   svgEl.style.width = `${chartW}px`;
 
@@ -533,8 +598,7 @@ function drawChart(chart) {
   // Keep the view snapped to the latest data (right edge) after every
   // redraw — matches how real exchange charts behave. The person can still
   // scroll left manually to look at older points between redraws.
-  const scrollEl = els.entryLineEl.closest('.live-chart-scroll');
-  if (scrollEl) scrollEl.scrollLeft = scrollEl.scrollWidth;
+  scrollEl.scrollLeft = scrollEl.scrollWidth;
 }
 
 async function tickLiveFeatured(spread) {
@@ -598,7 +662,7 @@ function startLiveTick(spread) {
 
 function stopLiveTick() {
   if (live.timer) clearInterval(live.timer);
-  live = { key: null, timer: null, points: [], windowSize: live.windowSize, els: null };
+  live = { key: null, timer: null, points: [], windowSize: live.windowSize, yZoom: live.yZoom, els: null };
 }
 
 // Loads the "История спредов" chart exactly ONCE per opened pair — no
@@ -645,7 +709,7 @@ async function loadHistoryChart(spread) {
 
 function stopCharts() {
   stopLiveTick();
-  history = { key: null, points: [], windowSize: history.windowSize, els: null };
+  history = { key: null, points: [], windowSize: history.windowSize, yZoom: history.yZoom, els: null };
 }
 
 let pinnedSpread = null; // the exchange pair "locked in" for the live chart when a coin detail page is opened

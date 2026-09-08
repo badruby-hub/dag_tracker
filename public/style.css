@@ -865,28 +865,6 @@ body {
   animation: none;
 }
 
-.live-chart-zoom {
-  display: flex;
-  gap: 4px;
-}
-
-.live-chart-zoom__btn {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.live-chart-zoom__btn:active { transform: scale(0.9); }
-
 .live-chart-body {
   display: flex;
 }
@@ -896,21 +874,30 @@ body {
   flex: 1;
   min-width: 0;
   padding-right: 52px; /* room for the y-axis labels drawn on top */
+  overflow: hidden; /* clips badges/content that end up outside the box when zoomed */
 }
 
 .live-chart-scroll {
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
+  /* Native scrollbar hidden — the chart still scrolls (via JS and touch
+     drag), just without a visible bar cluttering the bottom edge. */
+  scrollbar-width: none;
+}
+
+.live-chart-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .live-chart {
   height: 110px;
   display: block;
-  /* Width is set from JS in real pixels (points.length * px-per-point) so
-     the scroll container above actually has something to scroll — a
-     percentage width would just stretch to fit and never overflow. */
+  /* Width is set from JS in real pixels — at least the container's own
+     width, so a heavily zoomed-out chart (fewer px per point than would
+     fill the box) still stretches to fill it instead of shrinking into a
+     small block in the corner. Only exceeds that width — and actually
+     becomes scrollable — once there's more content than fits. */
 }
 
 .live-chart-grid line {
@@ -960,13 +947,24 @@ body {
 .live-chart-badge--entry { background: var(--buy); }
 .live-chart-badge--exit { background: var(--sell); }
 
+/* Drag/scroll zone for PRICE (vertical) zoom — like a real exchange chart,
+   dragging or scrolling over the price labels stretches/compresses the
+   candles vertically instead of needing separate +/- buttons. */
 .live-chart-yaxis {
   position: absolute;
   top: 0;
   right: 0;
   width: 52px;
   height: 100%;
-  pointer-events: none;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  border-radius: 0 8px 8px 0;
+  transition: background 0.1s ease;
+}
+
+.live-chart-yaxis:active {
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .live-chart-yaxis__val {
@@ -978,14 +976,26 @@ body {
   color: var(--text-dim);
 }
 
+/* Drag/scroll zone for TIME (horizontal) zoom — same idea, along the
+   bottom time axis. */
 .live-chart-xaxis {
   display: flex;
   justify-content: space-between;
   margin-top: 6px;
+  padding: 4px 0;
   padding-right: 52px;
   font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--text-dim);
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+  border-radius: 8px;
+  transition: background 0.1s ease;
+}
+
+.live-chart-xaxis:active {
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .live-chart-xaxis__now {
