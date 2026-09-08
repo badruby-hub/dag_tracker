@@ -859,11 +859,36 @@ async function scanAllCoins(minVolumeUsdt = 0, maxSaneSpreadPct = 50, pairMode =
  * main scan (no new per-exchange code needed), just discards everything
  * except the one ticker we actually want.
  */
+
+// Short-lived cache for the (expensive) bulk "all tickers" fetch, keyed by
+// exchange. The live-chart tick polls getSingleTicker every ~1s, and
+// without this it re-fetches an exchange's ENTIRE ticker list every single
+// second just to read one symbol out of it — for Binance specifically that
+// blows through their per-minute request-weight budget almost immediately
+// (its 24hr/premiumIndex "all symbols" calls are expensive) and gets us
+// rate-limited (HTTP 429). A few seconds of staleness is imperceptible on
+// a live chart; the request volume this saves is not.
+const TICKER_CACHE_TTL_MS = 3000;
+const tickerCache = new Map(); // exchangeName -> { ts, promise }
+
+function getCachedExchangeMap(ex) {
+  const cached = tickerCache.get(ex.name);
+  if (cached && Date.now() - cached.ts < TICKER_CACHE_TTL_MS) {
+    return cached.promise;
+  }
+  const promise = ex.fetch().catch((err) => {
+    tickerCache.delete(ex.name); // don't cache a failure — let the next call retry fresh
+    throw err;
+  });
+  tickerCache.set(ex.name, { ts: Date.now(), promise });
+  return promise;
+}
+
 async function getSingleTicker(exchangeName, rawSymbol) {
   const ex = EXCHANGES.find((e) => e.name === exchangeName);
   if (!ex) return null;
   try {
-    const map = await ex.fetch();
+    const map = await getCachedExchangeMap(ex);
     for (const ticker of map.values()) {
       if (ticker.rawSymbol === rawSymbol) return ticker;
     }
